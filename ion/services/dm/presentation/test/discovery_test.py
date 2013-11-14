@@ -5,7 +5,7 @@
 @date 05/07/12 08:17
 @description Integration and Unit tests for Discovery Service
 '''
-from unittest.case import skipIf, skip
+from unittest.case import skipIf, skip, SkipTest
 from pyon.public import PRED, CFG, RT
 from pyon.core.exception import BadRequest, NotFound
 from pyon.core.bootstrap import get_sys_name
@@ -47,6 +47,7 @@ use_es = CFG.get_safe('system.elasticsearch',False)
 @attr('UNIT', group='dm')
 class DiscoveryUnitTest(PyonTestCase):
     def setUp(self):
+        raise SkipTest("POSTGRES WITHOUT ES")
         super(DiscoveryUnitTest,self).setUp()
         mock_clients = self._create_service_mock('discovery')
         self.discovery = DiscoveryService()
@@ -426,6 +427,7 @@ class DiscoveryUnitTest(PyonTestCase):
 @unittest.skipIf(os.getenv('CEI_LAUNCH_TEST', False), 'Skip test while in CEI LAUNCH mode')
 class DiscoveryIntTest(IonIntegrationTestCase):
     def setUp(self):
+        raise SkipTest("POSTGRES WITHOUT ES")
         super(DiscoveryIntTest, self).setUp()
         config = DotDict()
         config.bootstrap.use_es = True

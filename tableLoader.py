@@ -52,7 +52,7 @@ class resource_parser():
         self.con.commit()
         listRows = self.cur.fetchall()
         for row in listRows:
-            self.dropExistingTable(row[0],use_cascade =true)    
+            self.dropExistingTable(row[0],use_cascade =True)    
 
 
         #reset the layer information on geoserver
@@ -76,7 +76,9 @@ class resource_parser():
         resetGSStore = False
         for dp in data_products:
             data_product_id = dp._id
-            coverage_path = DatasetManagementService()._get_coverage_path(data_product_id)
+            dataset_ids, _ = container.resource_registry.find_objects(data_product_id, PRED.hasDataset, id_only=True)
+            dataset_id = dataset_ids[0]
+            coverage_path = DatasetManagementService._get_coverage_path(dataset_id)
 
             #dataproduct id and stream information
             stream_def_ids, _ = container.resource_registry.find_objects(data_product_id, PRED.hasStreamDefinition,id_only=True)
@@ -117,6 +119,7 @@ class resource_parser():
             createTableString ="create foreign table \""+dataset_id+"\" ("
 
             #loop through the params
+            data_params =[]
             for param in params:
                 #get the information
                 desc =  param['parameter_context']['description']
@@ -125,12 +128,23 @@ class resource_parser():
                 disp_name = param['parameter_context']['display_name']
                 internal_name = param['parameter_context']['internal_name']
                 units = param.units
+                if (not units):
+                    try:
+                        units= param['parameter_context']['uom']
+                        pass
+                    except Exception, e:
+                        pass
+                        #raise e
+
                 value_encoding = param.value_encoding
+                if (not value_encoding):
+                    value_encoding = param['parameter_context']['param_type']['_value_encoding']
+
                 fill_value = param.fill_value
                 std_name = param.standard_name
 
                 #only use things that have valid value
-                if ((len(name)>0) and (len(desc)>0) and (len(units)>0) and (value_encoding is not None)):
+                if (len(name)>0): #and (len(desc)>0) and (len(units)>0) and (value_encoding is not None)):
                     if (DEBUG):
                         print "-------processed-------"
                         print ooi_short_name
@@ -143,13 +157,16 @@ class resource_parser():
 
                     #is it a time field, i.e goes the name contain time
                     if (name.find('time')>=0):
-                        createTableString+=name+" "+TIMEDATE
+                        createTableString+="\""+name+"\" "+TIMEDATE
                     else:
                         #get the primitve type, and generate something using NAME
                         if (value_encoding.startswith('int')):
-                            createTableString+=name+" "+REAL
+                            createTableString+="\""+name+"\" "+REAL
                         elif(value_encoding.startswith('float')):
-                            createTableString+=name+" "+REAL
+                            createTableString+="\""+name+"\" "+REAL
+                        #no value encoding available     
+                        else:
+                            createTableString+="\""+name+"\" "+REAL  
 
                 pass
 
@@ -197,7 +214,7 @@ class resource_parser():
     def removeSQLTable(self, dataset_id):
         print "sql remove"
 
-    def dropExistingTable(self, dataset_id,use_cascade =false):
+    def dropExistingTable(self, dataset_id,use_cascade =False):
         self.cur.execute(self.getTableDropCmd(dataset_id))
         self.con.commit()
 
@@ -222,12 +239,12 @@ class resource_parser():
         return sqlcmd
 
 
-    def getTableDropCmd(self,dataset_id,use_cascade =false):
+    def getTableDropCmd(self,dataset_id,use_cascade =False):
         #drop table
         if (use_cascade):
             sqlcmd = "drop foreign table \""+dataset_id+"\" cascade;"
         else:
-            sqlcmd = "drop foreign table \""+dataset_id+"\";"    
+            sqlcmd = "drop foreign table \""+dataset_id+"\" cascade;"    
         return sqlcmd
 
     def dropAllFDT(self):

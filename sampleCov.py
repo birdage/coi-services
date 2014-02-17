@@ -26,6 +26,7 @@ import os
 import gevent
 import numpy as np
 
+@attr('INT', group='dm')
 class DatasetLoadTest(IonIntegrationTestCase):
     def setUp(self):
         self._start_container()
@@ -60,7 +61,7 @@ class DatasetLoadTest(IonIntegrationTestCase):
         self.addCleanup(monitor.stop)
 
         rdt = ph.get_rdt(stream_def_id)
-        ph.fill_rdt(rdt,1000)
+        ph.fill_rdt(rdt,100)
         ph.publish_rdt_to_data_product(data_product_id, rdt)
         self.assertTrue(monitor.event.wait(10))
 

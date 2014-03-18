@@ -260,7 +260,7 @@ class resource_parser():
             pos = create_table_string.rfind(',')
             create_table_string = create_table_string[:pos] + ' ' + create_table_string[pos+1:]
             print coverage_path
-            create_table_string = self.addServerInfo(create_table_string,coverage_path)
+            create_table_string = self.addServerInfo(create_table_string,coverage_path,dataset_id)
             
             if (DEBUG):
                 print "\n"
@@ -300,8 +300,8 @@ class resource_parser():
     '''
     add the server info to the sql create table request
     '''
-    def addServerInfo(self, sqlquery,coverage_path):
-        sqlquery += ") server " +self.coverage_fdw_sever+ " options(k \'1\',cov_path \'"+coverage_path+"\');"
+    def addServerInfo(self, sqlquery,coverage_path,coverage_id):
+        sqlquery += ") server " +self.coverage_fdw_sever+ " options(k \'1\',cov_path \'"+coverage_path+"\',cov_id \'"+coverage_id+"\');"
         return sqlquery
 
     def modifySQLTable(self, dataset_id, params):

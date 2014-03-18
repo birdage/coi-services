@@ -18,9 +18,9 @@ from pyon.public import CFG
 
 DEBUG = False
 
-REAL = "real,"
-INT = "int,"
-TIMEDATE = "timestamp,"
+REAL = "real"
+INT = "int"
+TIMEDATE = "timestamp"
 
 class resource_parser():
 
@@ -146,10 +146,18 @@ class resource_parser():
     def createSingleResource(self,new_resource_id,param_dict):
         #parse 
         relevant = []
+        print "What the fuck are you passing me?"
+        print "NOOOOOOOOOOOOO!"
+        print "God damnit"
+        from pprint import pprint
+        with open('/tmp/readmymind.txt', 'w') as f:
+            pprint(param_dict, stream=f)
         for k,v in param_dict.iteritems():
-            if isinstance(v, list) and len(v)==2 and 'param_type' in v[1]:
+            print k
+            print bool( isinstance(v, (tuple, list)) and len(v)==2 and 'param_type' in v[1])
+            if isinstance(v, (tuple, list)) and len(v)==2 and 'param_type' in v[1]:
                 relevant.append(k)
-        
+
         if (DEBUG):
             print 'params are', relevant
 
@@ -210,9 +218,12 @@ class resource_parser():
         if (not self.doesTableExist(dataset_id)):
 
             valid_types={}
-            create_table_string ="create foreign table \""+dataset_id+"\" ("
+            create_table_string = 'create foreign table "%s" (' % dataset_id
+            print create_table_string
 
             #loop through the params
+            encodings = []
+            print "Probably an empty list:", relevant
             for param in relevant:
                 #get the information
                 data_item = params[param]
@@ -252,14 +263,19 @@ class resource_parser():
                     else:
                         [encoding,prim_type] = self.getValueEncoding(name,value_encoding)          
                         if encoding is not None:
-                            create_table_string+=encoding
+
+                            # param_name REAL,
+                            print "I bet you don't see shit"
+                            print encoding
+                            encodings.append(encoding)
+                            print "I'm an asshole"
                             valid_types[name] = prim_type
 
-                pass
 
-            pos = create_table_string.rfind(',')
-            create_table_string = create_table_string[:pos] + ' ' + create_table_string[pos+1:]
-            print coverage_path
+            create_table_string += ','.join(encodings)
+            # String should look like
+            # CREATE TABLE blah blah (param REAL, param INT, param INT
+            print create_table_string
             create_table_string = self.addServerInfo(create_table_string,coverage_path,dataset_id)
             
             if (DEBUG):
@@ -267,6 +283,8 @@ class resource_parser():
                 print create_table_string
 
             try:
+                print 'Probably fail after this'
+                print create_table_string
                 self.cur.execute(create_table_string)
                 self.con.commit()
                 #should always be lat and lon
@@ -276,6 +294,7 @@ class resource_parser():
                 return ((self.doesTableExist(dataset_id)),valid_types)
 
             except Exception, e:
+                raise
                 #error setting up connection
                 print 'Error %s' % e
 

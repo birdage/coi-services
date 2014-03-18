@@ -37,6 +37,8 @@ import numpy as np
 import re
 import ast
 
+from pyon.util.breakpoint import *
+
 class DatasetManagementService(BaseDatasetManagementService):
     DEFAULT_DATASTORE = 'datasets'
     DEFAULT_VIEW      = 'manifest/by_dataset'
@@ -68,6 +70,7 @@ class DatasetManagementService(BaseDatasetManagementService):
 
 #--------
 
+    @debug_wrapper
     def create_dataset(self, name='', datastore_name='', view_name='', stream_id='', parameter_dict=None, spatial_domain=None, temporal_domain=None, parameter_dictionary_id='', description='', parent_dataset_id=''):
         
         validate_true(parameter_dict or parameter_dictionary_id, 'A parameter dictionary must be supplied to register a new dataset.')
@@ -143,7 +146,7 @@ class DatasetManagementService(BaseDatasetManagementService):
 
         #print "DM:delete dataset:" + "dataset_id:" + dataset._id
         if (self.geos_available):
-            self.rr_table_loader.removeSingleResource(dataset._id)      
+            self.rr_table_loader.removeSingleResource(dataset_id)      
 
     def register_dataset(self, data_product_id=''):
         procs,_ = self.clients.resource_registry.find_resources(restype=RT.Process, id_only=True)

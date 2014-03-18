@@ -55,7 +55,7 @@ class DatasetLoadTest(IonIntegrationTestCase):
         self.USERNAME = CFG.get_safe('eoi.geoserver.user_name', False)
         self.PASSWORD = CFG.get_safe('eoi.geoserver.password', False)
         self.GS_HOST = CFG.get_safe('eoi.geoserver.server', False)
-        self.GS_REST_URL = ''.join([GS_HOST, '/geoserver/rest'])
+        self.GS_REST_URL = ''.join([self.GS_HOST, '/geoserver/rest'])
         self.GS_OWS_URL = ''.join([self.GS_HOST, '/geoserver/ows'])
 
     @unittest.skipIf((CFG.get_safe('eoi.meta.user_eoi_services', False)), 'Skip test in TABLE LOADER as services are not loaded')

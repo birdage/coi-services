@@ -145,26 +145,22 @@ class ResourceParser():
         Creates a single resource
         """
         
-        #parse
+        #parse relevant params from the dict
         relevant = []
         for k, v in param_dict.iteritems():
-            if isinstance(v, list) and len(v) == 2 and 'param_type' in v[1]:
+            if isinstance(v, (tuple, list)) and len(v) == 2 and 'param_type' in v[1]:
                 relevant.append(k)
-        
-        if DEBUG:
-            log.debug('params are', relevant)
 
-        coverage_path = self._get_coverage_path(new_resource_id)
+        #only go forward if there are params available        
+        if relevant:
+            coverage_path = self._get_coverage_path(new_resource_id)
 
-        #generate table from params and id
-        [success, prim_types] = self.generate_sql_table(new_resource_id, param_dict, relevant, coverage_path)
+            #generate table from params and id
+            [success, prim_types] = self.generate_sql_table(new_resource_id, param_dict, relevant, coverage_path)
 
-        if DEBUG:
-            log.debug(prim_types)
-
-        if success:
-            #generate geoserver layer
-            self.send_geonode_request(self.addlayer, new_resource_id, prim_types)
+            if success:
+                #generate geoserver layer
+                self.send_geonode_request(self.addlayer, new_resource_id, prim_types)
     
     def get_value_encoding(self, name, value_encoding):
         encoding_string = None
@@ -210,9 +206,10 @@ class ResourceParser():
         #check table exists
         if not self.does_table_exist(dataset_id):
             valid_types = {}
-            create_table_string = "create foreign table \""+dataset_id+"\" ("
+            create_table_string = 'create foreign table "%s" (' % dataset_id
 
             #loop through the params
+            encodings = []
             for param in relevant:
                 #get the information
                 data_item = params[param]
@@ -252,14 +249,13 @@ class ResourceParser():
                     else:
                         [encoding, prim_type] = self.get_value_encoding(name, value_encoding)
                         if encoding is not None:
-                            create_table_string += encoding
+                            encodings.append(encoding)
                             valid_types[name] = prim_type
 
                 pass
 
-            pos = create_table_string.rfind(',')
-            create_table_string = create_table_string[:pos] + ' ' + create_table_string[pos+1:]
-            print coverage_path
+            create_table_string += ','.join(encodings)
+            log.debug("coverage path:"+coverage_path)
             create_table_string = self.add_server_info(create_table_string, coverage_path, dataset_id)
             
             if DEBUG:
@@ -271,12 +267,12 @@ class ResourceParser():
                 #should always be lat and lon
                 self.cur.execute(self.generate_table_view(dataset_id, self.latitude, self.longitude))
                 self.con.commit()
-
                 return self.does_table_exist(dataset_id), valid_types
 
             except Exception as e:
                 #error setting up connection
                 log.debug('Error %s', e)
+                raise
 
         else:
             if DEBUG:

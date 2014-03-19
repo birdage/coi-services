@@ -49,6 +49,7 @@ class ResourceParser():
         self.con = None
         self.postgres_db_available = False
         self.importer_service_available = False
+        self.use_geo_services = False
         
         if self.database and self.resetstore and self.latitude and self.longitude:
             log.debug("TableLoader:Could not load properties from pyon or pyon local...")
@@ -67,7 +68,7 @@ class ResourceParser():
                 #error setting up connection
                 log.debug('Error %s', e)
 
-            self.use_geo_services = False
+            
             if self.postgres_db_available and self.importer_service_available:
                 self.use_geo_services = True
                 log.debug("TableLoader:Using geoservices...")

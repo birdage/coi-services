@@ -36,7 +36,7 @@ GS_HOST = CFG.get_safe('eoi.geoserver.server', False)
 GS_REST_URL = ''.join([GS_HOST, '/geoserver/rest'])
 GS_OWS_URL = ''.join([GS_HOST, '/geoserver/ows'])
 IMPORTER_SERVICE_SERVER = CFG.get_safe('eoi.importer_service.server', False)
-IMPORTER_SERVICE_PORT = CFG.get_safe('eoi.importer_service.port', False)
+IMPORTER_SERVICE_PORT = str(CFG.get_safe('eoi.importer_service.port', False))
 IMPORTER_SERVICE_URL = ''.join([IMPORTER_SERVICE_SERVER, ':', IMPORTER_SERVICE_PORT])
 
 
@@ -46,8 +46,9 @@ class DatasetLoadTest(IonIntegrationTestCase):
     The following integration tests (INTMAN) are to ONLY be run manually
     """
 
-    def setup_container(self):
+    def setUp(self):
         self._start_container()
+
         self.container.start_rel_from_url('res/deploy/r2deploy.yml')
         self.dataset_management = DatasetManagementServiceClient()
         self.data_product_management = DataProductManagementServiceClient()
@@ -100,7 +101,7 @@ class ServiceTests(IonIntegrationTestCase):
     """
     Tests the GeoServer and Foreign Data Wrapper (FDW) services.
     """
-    def setup_container(self):
+    def setUp(self):
         self._start_container()
         self.container.start_rel_from_url('res/deploy/r2deploy.yml')
         self.dataset_management = DatasetManagementServiceClient()

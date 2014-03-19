@@ -141,9 +141,9 @@ class DatasetManagementService(BaseDatasetManagementService):
             self.clients.resource_registry.delete_association(assoc)
         self.clients.resource_registry.delete(dataset_id)
 
-        log.debug('DM:delete dataset: dataset_id: %s', dataset._id)
+        log.debug('DM:delete dataset: dataset_id: %s', dataset_id)
         if self.geos_available:
-            self.rr_table_loader.remove_single_resource(dataset._id)
+            self.rr_table_loader.remove_single_resource(dataset_id)
 
     def register_dataset(self, data_product_id=''):
         procs,_ = self.clients.resource_registry.find_resources(restype=RT.Process, id_only=True)

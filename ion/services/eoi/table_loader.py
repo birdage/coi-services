@@ -76,9 +76,6 @@ class ResourceParser():
                 log.debug("TableLoader:NOT using geoservices...")
 
 
-
-
-
     def check_for_importer_service(self):
         try:
             r = requests.get(self.server+'/service=alive&name=ooi&id=ooi')

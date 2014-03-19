@@ -5,13 +5,10 @@ A Service to load data products into PostgreSQL and Geoserver
 
 __author__ = 'abird'
 
-import os
 from pyon.util.breakpoint import breakpoint
 from pyon.ion.resource import LCS, LCE, PRED
 from pyon.util.file_sys import FileSystem, FS
-import time
 import psycopg2
-import sys
 import requests
 import os
 from pyon.public import CFG
@@ -26,7 +23,7 @@ TIMEDATE = "timestamp,"
 
 class ResourceParser():
     """
-
+    Processes the Resource Registry CRUD requests into PostgreSQL and ImporterService calls
     """
     def __init__(self):
         self.using_eoi_services = CFG.get_safe('eoi.meta.use_eoi_services', False)
@@ -42,7 +39,7 @@ class ResourceParser():
             self.server = CFG.get_safe('eoi.importer_service.server', "localhost")+":"+str(CFG.get_safe('eoi.importer_service.port', 8844))
             self.database = CFG.get_safe('eoi.postgres.database', False)
             self.db_user = CFG.get_safe('eoi.postgres.user_name', False)
-            self.db_pass =  CFG.get_safe('eoi.postgres.password', False)
+            self.db_pass = CFG.get_safe('eoi.postgres.password', False)
 
             self.table_prefix = CFG.get_safe('eoi.postgres.table_prefix', False)
             self.view_suffix = CFG.get_safe('eoi.postgres.table_suffix', False)
@@ -160,7 +157,7 @@ class ResourceParser():
         coverage_path = self._get_coverage_path(new_resource_id)
 
         #generate table from params and id
-        [success, prim_types]= self.generate_sql_table(new_resource_id, param_dict, relevant, coverage_path)
+        [success, prim_types] = self.generate_sql_table(new_resource_id, param_dict, relevant, coverage_path)
 
         if DEBUG:
             log.debug(prim_types)
@@ -272,7 +269,7 @@ class ResourceParser():
                 self.cur.execute(create_table_string)
                 self.con.commit()
                 #should always be lat and lon
-                self.cur.execute(self.generate_table_view(dataset_id,self.latitude,self.longitude))
+                self.cur.execute(self.generate_table_view(dataset_id, self.latitude, self.longitude))
                 self.con.commit()
 
                 return self.does_table_exist(dataset_id), valid_types

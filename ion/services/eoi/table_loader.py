@@ -16,9 +16,9 @@ from pyon.util.log import log
 
 DEBUG = False
 
-REAL = "real,"
-INT = "int,"
-TIMEDATE = "timestamp,"
+REAL = "real"
+INT = "int"
+TIMEDATE = "timestamp"
 
 
 class ResourceParser():
@@ -50,8 +50,6 @@ class ResourceParser():
         self.postgres_db_available = False
         self.importer_service_available = False
         self.use_geo_services = False
-        
-        breakpoint(locals(),globals())
 
         if (self.resetstore is False):
             log.debug("TableLoader:Could not load properties from pyon or pyon local...")

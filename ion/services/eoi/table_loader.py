@@ -58,7 +58,7 @@ class ResourceParser():
             ver = self.cur.fetchone()
             self.postgres_db_available = True
             self.importer_service_available = self.check_for_importer_service()
-            log.debug(ver)
+            log.debug(str(ver))
 
         except psycopg2.databaseError as e:
             #error setting up connection
@@ -194,8 +194,8 @@ class ResourceParser():
             encoding_string = "\""+name+"\" "+REAL
             prim_type = "real"
 
-        log.debug('encoding_string: %s', encoding_string)
-        log.debug('prim_type: %s', prim_type)
+        log.debug('encoding_string: %s', str(encoding_string))
+        log.debug('prim_type: %s', str(prim_type))
 
         return encoding_string, prim_type
 
@@ -234,14 +234,14 @@ class ResourceParser():
                 if len(name) > 0: #and (len(desc)>0) and (len(units)>0) and (value_encoding is not None)):
                     if DEBUG:
                         log.debug("-------processed-------")
-                        log.debug(ooi_short_name)
-                        log.debug(desc)
-                        log.debug(name)
-                        log.debug(disp_name)
-                        log.debug(units)
-                        log.debug(internal_name)
-                        log.debug(value_encoding)
-                        log.debug(cm_type[1])
+                        log.debug(str(ooi_short_name))
+                        log.debug(str(desc))
+                        log.debug(str(name))
+                        log.debug(str(disp_name))
+                        log.debug(str(units))
+                        log.debug(str(internal_name))
+                        log.debug(str(value_encoding))
+                        log.debug(str(cm_type[1]))
 
                     if cm_type[1] == "ArrayType":
                         #ignore array types

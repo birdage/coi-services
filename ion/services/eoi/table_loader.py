@@ -50,26 +50,33 @@ class ResourceParser():
         self.postgres_db_available = False
         self.importer_service_available = False
         
-        try:
-            self.con = psycopg2.connect(database=self.database, user=self.db_user, password=self.db_pass)
-            self.cur = self.con.cursor()
-            #checks the connection
-            self.cur.execute('SELECT version()')
-            ver = self.cur.fetchone()
-            self.postgres_db_available = True
-            self.importer_service_available = self.check_for_importer_service()
-            log.debug(str(ver))
-
-        except psycopg2.databaseError as e:
-            #error setting up connection
-            log.debug('Error %s', e)
-
-        self.use_geo_services = False
-        if self.postgres_db_available and self.importer_service_available:
-            self.use_geo_services = True
-            log.debug("TableLoader:Using geoservices...")
+        if self.database and self.resetstore and self.latitude and self.longitude
+            log.debug("TableLoader:Could not load properties from pyon or pyon local...")
         else:
-            log.debug("TableLoader:NOT using geoservices...")
+            try:
+                self.con = psycopg2.connect(database=self.database, user=self.db_user, password=self.db_pass)
+                self.cur = self.con.cursor()
+                #checks the connection
+                self.cur.execute('SELECT version()')
+                ver = self.cur.fetchone()
+                self.postgres_db_available = True
+                self.importer_service_available = self.check_for_importer_service()
+                log.debug(str(ver))
+
+            except psycopg2.databaseError as e:
+                #error setting up connection
+                log.debug('Error %s', e)
+
+            self.use_geo_services = False
+            if self.postgres_db_available and self.importer_service_available:
+                self.use_geo_services = True
+                log.debug("TableLoader:Using geoservices...")
+            else:
+                log.debug("TableLoader:NOT using geoservices...")
+
+
+
+
 
     def check_for_importer_service(self):
         try:
@@ -91,7 +98,7 @@ class ResourceParser():
 
     def send_geonode_request(self, request, resource_id, prim_types=None):
         try:
-            
+            print request
             if prim_types is None:
                 r = requests.get(self.server+'/service='+request+'&name='+resource_id+'&id='+resource_id)
                 self.process_status_code(r.status_code) 

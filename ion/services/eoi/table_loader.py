@@ -27,12 +27,12 @@ class ResourceParser():
     """
     def __init__(self):
         self.using_eoi_services = CFG.get_safe('eoi.meta.use_eoi_services', False)
-        
+
         if self.using_eoi_services:
             self.latitude = CFG.get_safe('eoi.meta.lat_field', False)
             self.longitude = CFG.get_safe('eoi.meta.lon_field', False)
 
-            self.resetstore = CFG.get_safe('eoi.importer_service.resetstore', False)
+            self.resetstore = CFG.get_safe('eoi.importer_service.reset_store', False)
             self.removelayer = CFG.get_safe('eoi.importer_service.remove_layer', False)
             self.addlayer = CFG.get_safe('eoi.importer_service.add_layer', False)
             #add default varaibles
@@ -50,7 +50,7 @@ class ResourceParser():
         self.postgres_db_available = False
         self.importer_service_available = False
         
-        if self.database and self.resetstore and self.latitude and self.longitude
+        if self.database and self.resetstore and self.latitude and self.longitude:
             log.debug("TableLoader:Could not load properties from pyon or pyon local...")
         else:
             try:

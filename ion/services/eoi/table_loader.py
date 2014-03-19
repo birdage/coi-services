@@ -51,7 +51,9 @@ class ResourceParser():
         self.importer_service_available = False
         self.use_geo_services = False
         
-        if self.database and self.resetstore and self.latitude and self.longitude:
+        breakpoint(locals(),globals())
+
+        if (self.resetstore is False):
             log.debug("TableLoader:Could not load properties from pyon or pyon local...")
         else:
             try:
@@ -99,7 +101,6 @@ class ResourceParser():
 
     def send_geonode_request(self, request, resource_id, prim_types=None):
         try:
-            print request
             if prim_types is None:
                 r = requests.get(self.server+'/service='+request+'&name='+resource_id+'&id='+resource_id)
                 self.process_status_code(r.status_code) 

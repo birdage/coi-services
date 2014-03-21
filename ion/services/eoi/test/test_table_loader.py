@@ -48,7 +48,6 @@ class DatasetLoadTest(IonIntegrationTestCase):
 
     def setUp(self):
         self._start_container()
-
         self.container.start_rel_from_url('res/deploy/r2deploy.yml')
         self.dataset_management = DatasetManagementServiceClient()
         self.data_product_management = DataProductManagementServiceClient()
@@ -145,7 +144,7 @@ class ServiceTests(IonIntegrationTestCase):
     @unittest.skipIf((CFG.get_safe('eoi.meta.user_eoi_services', False)), 'Skip test in TABLE LOADER as services are not loaded')
     def test_reset_store(self):
         # Makes sure store is empty 
-        self.assertTrue(_reset_store())
+        self.assertTrue(self.reset_store())
         url = ''.join([GS_REST_URL, '/layers.json'])
 
         # Asserts layers were able to be retrieved
@@ -218,7 +217,7 @@ class ServiceTests(IonIntegrationTestCase):
         # send add layer directly to localhost 8844 with some params
         # store gets reset every time container is started
         # Makes sure store is empty
-        self.assertTrue(_reset_store())
+        self.assertTrue(self.reset_store())
         params = {'temp_L1': 'real', 'conductivity_L1': 'real', 'temp': 'real', 'density': 'real',
                   'pressure_L1': 'real', 'lon': 'real', 'lat_lookup': 'real', 'density_lookup': 'real',
                   'pressure': 'real', 'lon_lookup': 'real', 'geom': 'geom', 'time': 'time', 'lat': 'real',
@@ -374,7 +373,7 @@ class ServiceTests(IonIntegrationTestCase):
         self.assertTrue(r.content.find('<om:ObservationCollection') >= 0)
         self.assertTrue(r.content.find('ExceptionReport') == -1)
 
-    def _reset_store(self, store_name='ooi', store_id='ooi'):
+    def reset_store(self, store_name='ooi', store_id='ooi'):
         """
         Posts a resetstore request to the ImporterService
         """

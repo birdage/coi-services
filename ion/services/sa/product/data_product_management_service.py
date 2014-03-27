@@ -11,6 +11,7 @@ from pyon.util.ion_time import IonTime
 from pyon.ion.resource import ExtendedResourceContainer
 from pyon.event.event import EventPublisher
 from pyon.util.arg_check import validate_is_instance, validate_is_not_none, validate_false, validate_true
+from pyon.net.endpoint import RPCClient
 
 from ion.services.dm.utility.granule_utils import RecordDictionaryTool
 from ion.util.enhanced_resource_registry_client import EnhancedResourceRegistryClient
@@ -26,6 +27,9 @@ from coverage_model import QuantityType, ParameterContext, ParameterDictionary, 
 from ion.services.dm.inventory.dataset_management_service import DatasetManagementService
 from ion.services.dm.utility.test.parameter_helper import ParameterHelper
 
+from pyon.datastore.datastore import DataStore
+from pyon.datastore.datastore_query import DatastoreQueryBuilder, DQ
+
 from lxml import etree
 from datetime import datetime
 
@@ -38,17 +42,7 @@ from pyon.core.governance import ORG_MANAGER_ROLE, DATA_OPERATOR, OBSERVATORY_OP
 from pyon.core.exception import Inconsistent
 
 import functools
-def debug_wrapper(func):
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except:
-            from traceback import print_exc
-            print_exc()
-            raise
-    return wrapper
-
+from pyon.util.breakpoint import debug_wrapper
 
 
 class DataProductManagementService(BaseDataProductManagementService):
@@ -86,7 +80,7 @@ class DataProductManagementService(BaseDataProductManagementService):
             for dataset_id in dataset_ids:
                 self.assign_dataset_to_data_product(data_product_id, dataset_id)
             if dataset_ids:
-                self.clients.dataset_management.register_dataset(data_product_id=data_product_id)
+                self.create_catalog_entry(data_product_id)
 
       # Return the id of the new data product
         return data_product_id
@@ -227,9 +221,21 @@ class DataProductManagementService(BaseDataProductManagementService):
         if data_product and data_product.type_ == RT.DataProduct:
             data_product.geospatial_point_center = GeoUtils.calc_geospatial_point_center(data_product.geospatial_bounds)
 
-        self.RR2.update(data_product, RT.DataProduct)
+        original = self.RR2.read(data_product._id)
 
-        #TODO: any changes to producer? Call DataAcquisitionMgmtSvc?
+        self.RR2.update(data_product, RT.DataProduct)
+        if self._metadata_changed(original, data_product):
+            self.update_catalog_entry(data_product._id)
+
+    def _metadata_changed(self, original_dp, new_dp):
+        from ion.processes.data.registration.registration_process import RegistrationProcess
+        for field in RegistrationProcess.catalog_metadata:
+            if hasattr(original_dp, field) and getattr(original_dp, field) != getattr(new_dp, field):
+                return True
+        return False
+
+
+
 
     def delete_data_product(self, data_product_id=''):
 
@@ -280,14 +286,77 @@ class DataProductManagementService(BaseDataProductManagementService):
         ret, _ = self.clients.resource_registry.find_resources(RT.DataProduct, None, None, False)
         return ret
 
+    def get_data_product_updates(self, data_product_id_list=None, since_timestamp="" ):
+
+        # For a list of data products, retrieve events since the given timestamp. The return is a dict
+        # of dp_id to a dict containing dataset_id, updated: boolean, current geospatial bounds, current temporal bounds.
+
+        event_objs = None
+        response_data = {}
+
+        # get the passed parameters. At least the data product id and start_time
+        # should be specified
+        if data_product_id_list == None or len(data_product_id_list) == 0:
+            raise  BadRequest("Please pass a valid data_product_id")
+
+        # Build query structure for fetching events for the data products passed
+        try:
+            dqb = DatastoreQueryBuilder(datastore=DataStore.DS_EVENTS, profile=DataStore.DS_PROFILE.EVENTS)
+
+            filter_origins = dqb.in_(DQ.EA_ORIGIN, *data_product_id_list)
+            filter_types = dqb.in_(DQ.ATT_TYPE, "ResourceModifiedEvent")
+            filter_mindate = dqb.gte(DQ.RA_TS_CREATED, since_timestamp)
+            where = dqb.and_(filter_origins, filter_types, filter_mindate)
+
+            order_by = dqb.order_by([["ts_created", "desc"]])  # Descending order by time
+            dqb.build_query(where=where, order_by=order_by, limit=100000, skip=0, id_only=False)
+            query = dqb.get_query()
+
+            event_objs = self.container.event_repository.event_store.find_by_query(query)
+
+        except Exception as ex:
+            log.error("Error querying for events for specified data products: %s", ex.message)
+            event_objs = []
+
+        # Start populating the response structure
+        for data_product_id in data_product_id_list:
+            response_data[data_product_id] = {#"dataset_id" : None,
+                                              "updated" : False,
+                                              "current_geospatial_bounds" : None,
+                                              "current_temporal_bounds" : None}
+
+            """ Commented till Maurice decides he needs the dataset ids in the response
+
+            # Need dataset id in response data
+            ds_ids,_ = self.clients.resource_registry.find_objects(subject=data_product_id,
+                predicate=PRED.hasDataset,
+                id_only=True)
+            if (ds_ids and len(ds_ids) > 0):
+                response_data[data_product_id]["dataset_id"] = ds_ids[0]
+            """
+
+            # if we find any UPDATE event for this data_product_id. This type of dumb iteration
+            # is slow but since the returned events for all data_product_ids in the list are returned
+            # as one big list, there is no way to narrow down the search for UPDATE events
+            for event_obj in event_objs:
+                if event_obj.origin == data_product_id and event_obj.sub_type == "UPDATE":
+                    response_data[data_product_id]["updated"] = True
+                    continue
+
+            # Get information about the current geospatial and temporal bounds
+            dp_obj = self.clients.resource_registry.read(data_product_id)
+            if dp_obj:
+                response_data[data_product_id]["current_geospatial_bounds"] = dp_obj.geospatial_bounds
+                response_data[data_product_id]["current_temporal_bounds"] = dp_obj.nominal_datetime
 
 
-    def activate_data_product_persistence(self, data_product_id=''):
-        """Persist data product data into a data set
+        return response_data
 
-        @param data_product_id    str
-        @throws NotFound    object with specified id does not exist
-        """
+
+    def create_dataset_for_data_product(self, data_product_id=''):
+        '''
+        Create a dataset for a data product
+        '''
         #-----------------------------------------------------------------------------------------
         # Step 1: Collect related resources
 
@@ -340,18 +409,38 @@ class DataProductManagementService(BaseDataProductManagementService):
             
             # register the dataset for externalization
 
-            self.clients.dataset_management.register_dataset(data_product_id=data_product_id)
+            self.create_catalog_entry(data_product_id=data_product_id)
             child_products, _ = self.clients.resource_registry.find_subjects(object=data_product_id, predicate=PRED.hasDataProductParent, id_only=True)
             for child_product in child_products:
-                self.clients.dataset_management.register_dataset(data_product_id=child_product)
-            
-            log.debug("Activating data product persistence for stream_id: %s"  % str(stream_id))
+                self.create_catalog_entry(data_product_id=data_product_id)
         else:
             dataset_id = dataset_ids[0]
+        return dataset_id
+
+
+    def activate_data_product_persistence(self, data_product_id=''):
+        """Persist data product data into a data set
+
+        @param data_product_id    str
+        @throws NotFound    object with specified id does not exist
+        """
+        #-----------------------------------------------------------------------------------------
+        # Step 1: Collect related resources
+
+        data_product_obj = self.RR2.read(data_product_id)
+
+        validate_is_not_none(data_product_obj, "The data product id should correspond to a valid registered data product.")
+        
+        stream_ids, _ = self.clients.resource_registry.find_objects(subject=data_product_id, predicate=PRED.hasStream, id_only=True)
+        if not stream_ids:
+            raise BadRequest('Specified DataProduct has no streams associated with it')
+        stream_id = stream_ids[0]
+
+        dataset_id = self.create_dataset_for_data_product(data_product_id)
 
 
         #-----------------------------------------------------------------------------------------
-        # Step 3: Configure and start ingestion with lookup values
+        # Step 2: Configure and start ingestion with lookup values
 
         # grab the ingestion configuration id from the data_product in order to use to persist it
         if data_product_obj.dataset_configuration_id:
@@ -681,6 +770,33 @@ class DataProductManagementService(BaseDataProductManagementService):
 
         return provenance_image.getvalue()
 
+    def _registration_rpc(self, op, data_product_id):
+        procs,_ = self.clients.resource_registry.find_resources(restype=RT.Process, id_only=True)
+        pid = None
+        for p in procs:
+            if 'registration_worker' in p:
+                pid = p
+        if not pid: 
+            log.warning('No registration worker found')
+            return
+        rpc_cli = RPCClient(to_name=pid)
+        return rpc_cli.request({'data_product_id':data_product_id}, op=op)
+
+    def create_catalog_entry(self, data_product_id=''):
+        # Stub
+        return self._registration_rpc('create_entry',data_product_id) 
+
+    def read_catalog_entry(self, data_product_id=''):
+        # Stub
+        return self._registration_rpc('read_entry', data_product_id)
+
+    def update_catalog_entry(self, data_product_id=''):
+        # Stub
+        return self._registration_rpc('update_entry', data_product_id)
+
+    def delete_catalog_entry(self, data_product_id=''):
+        # Stub
+        return self._registration_rpc('delete_entry', data_product_id)
 
 
     ############################

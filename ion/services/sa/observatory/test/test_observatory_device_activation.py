@@ -14,6 +14,7 @@ __license__ = 'Apache 2.0'
 
 # Pyon object and resource imports.
 from pyon.public import IonObject, log, RT, PRED, LCS, LCE, OT, CFG, AS
+from interface.objects import  PortTypeEnum
 
 # Pyon unittest support.
 from pyon.util.int_test import IonIntegrationTestCase
@@ -340,6 +341,16 @@ class TestDeviceActivation(IonIntegrationTestCase):
             platform_device = config.pop('platform_device')
             site_id = self._retrieve_ooi_asset(platform_site)['_id']
             device_id = self._retrieve_ooi_asset(platform_device)['_id']
+
+            #create the port assignements
+            ret = self.container.resource_registry.find_resources_ext(
+                                            name=RSN_INSTRUMENT_01['name'])
+            dev_obj = ret[0][0]
+            dev_id = dev_obj['_id']
+            pp_obj = IonObject(OT.PlatformPort, reference_designator='RS01SLBS-MJ01A-02-PRESTA999', port_type= PortTypeEnum.PAYLOAD, ip_address='1' )
+            port_assignments = {dev_id : pp_obj}
+            config['port_assignments'] = port_assignments
+
             deployment = IonObject('Deployment', config)
             deployment_id = self.oms.create_deployment(deployment)
             self.oms.deploy_platform_site(site_id, deployment_id)
@@ -523,7 +534,17 @@ class TestDeviceActivation(IonIntegrationTestCase):
         ############################################################
         # Create and register new deployment.
         ############################################################
+
+        #create the port assignements
+        pp_obj0 = IonObject(OT.PlatformPort, reference_designator='GP03FLMA-RI001-09-CTDMOG999', port_type= PortTypeEnum.PAYLOAD, ip_address='1' )
+        pp_obj1 = IonObject(OT.PlatformPort, reference_designator='GP03FLMA-RI001-06-CTDMOG999', port_type= PortTypeEnum.PAYLOAD, ip_address='1' )
+        pp_obj2 = IonObject(OT.PlatformPort, reference_designator='GP03FLMA-RI001-13-CTDMOG999', port_type= PortTypeEnum.PAYLOAD, ip_address='1' )
+        pp_obj3 = IonObject(OT.PlatformPort, reference_designator='GP03FLMA-RI001', port_type= PortTypeEnum.PAYLOAD, ip_address='1' )
+        port_assignments = {inst_ids[0] : pp_obj0, inst_ids[1] : pp_obj1, inst_ids[2] : pp_obj2, riser_2_id : pp_obj3, }
+        CGSN_DEPLOYMENT_2['port_assignments'] = port_assignments
+
         deployment_2 = IonObject('Deployment', CGSN_DEPLOYMENT_2)
+
         deployment_2_id = self.oms.create_deployment(deployment_2)
         self.oms.assign_resource_to_observatory_org(deployment_2_id,org_id)
 
@@ -1230,7 +1251,10 @@ class TestDeviceActivation(IonIntegrationTestCase):
         self.oms.deploy_instrument_site(site_id, new_dep_id)
         self.ims.deploy_instrument_device(new_dev_id, new_dep_id)
         self.oms.activate_deployment(new_dep_id)
-        self.rms.execute_lifecycle_transition(new_dep_id, LCE.DEPLOY)
+
+        # Deployments no longer need this due to recent michael changes
+        # 4/3/14
+        #self.rms.execute_lifecycle_transition(new_dep_id, LCE.DEPLOY)
         self.rms.execute_lifecycle_transition(new_dev_id, LCE.DEPLOY)
         self.rms.execute_lifecycle_transition(new_dev_id, LCE.ENABLE)
 

@@ -56,7 +56,7 @@ class DataProductManagementService(BaseDataProductManagementService):
 
 
 
-    def create_data_product(self, data_product=None, stream_definition_id='', exchange_point='', dataset_id='', parent_data_product_id=''):
+    def create_data_product(self, data_product=None, stream_definition_id='', exchange_point='', dataset_id='', parent_data_product_id='', default_stream_configuration=None):
         """
         @param      data_product IonObject which defines the general data product resource
         @param      source_resource_id IonObject id which defines the source for the data
@@ -67,7 +67,8 @@ class DataProductManagementService(BaseDataProductManagementService):
         # WARNING: This creates a Stream as a side effect!!
         self.assign_stream_definition_to_data_product(data_product_id=data_product_id,
                                                       stream_definition_id=stream_definition_id,
-                                                      exchange_point=exchange_point)
+                                                      exchange_point=exchange_point,
+                                                      stream_configuration=default_stream_configuration)
 
         if dataset_id and parent_data_product_id:
             raise BadRequest('A parent dataset or parent data product can be specified, not both.')
@@ -154,9 +155,13 @@ class DataProductManagementService(BaseDataProductManagementService):
             self.clients.resource_registry.create_association(dpd._id, PRED.hasDataProcess, dp_id)
             self.clients.resource_registry.create_association(dp_id, PRED.hasOutputProduct, data_product._id)
 
+    def check_qc(self, data_product):
+        '''
+        Determine the relevant parameters that need QC applied and create parameters for the evaluations
+        '''
+        pass
 
-
-    def assign_stream_definition_to_data_product(self, data_product_id='', stream_definition_id='', exchange_point=''):
+    def assign_stream_definition_to_data_product(self, data_product_id='', stream_definition_id='', exchange_point='', stream_configuration=None):
 
         validate_is_not_none(data_product_id, 'A data product id must be passed to register a data product')
         validate_is_not_none(stream_definition_id, 'A stream definition id must be passed to assign to a data product')
@@ -174,11 +179,19 @@ class DataProductManagementService(BaseDataProductManagementService):
         # Associate the StreamDefinition with the data product
         self.RR2.assign_stream_definition_to_data_product_with_has_stream_definition(stream_definition_id,
                                                                                      data_product_id)
+        stream_name = ''
+        stream_type = ''
+        if stream_configuration is not None:
+            stream_name = stream_configuration.stream_name
+            stream_type = stream_configuration.stream_type
+
 
         stream_id, route = self.clients.pubsub_management.create_stream(name=data_product.name,
                                                                         exchange_point=exchange_point,
                                                                         description=data_product.description,
-                                                                        stream_definition_id=stream_definition_id)
+                                                                        stream_definition_id=stream_definition_id, 
+                                                                        stream_name=stream_name,
+                                                                        stream_type=stream_type)
 
         # Associate the Stream with the main Data Product and with the default data product version
         self.RR2.assign_stream_to_data_product_with_has_stream(stream_id, data_product_id)
@@ -588,6 +601,23 @@ class DataProductManagementService(BaseDataProductManagementService):
 #        dataset_ids, _ = self.clients.resource_registry.find_objects(subject=data_product_id, predicate=PRED.hasDataset, id_only=True)
 #        for dataset_id in dataset_ids:
 #            self.data_product.unlink_data_set(data_product_id, dataset_id)
+
+    def _get_reference_designator(self, data_product_id=''):
+        '''
+        Returns the reference designator for a data product if it has one
+        '''
+
+        device_ids, _ = self.clients.resource_registry.find_subjects(object=data_product_id, predicate=PRED.hasOutputProduct, subject_type=RT.InstrumentDevice, id_only=True)
+        if not device_ids: 
+            raise BadRequest("No instrument device associated with this data product")
+        device_id = device_ids[0]
+
+        sites, _ = self.clients.resource_registry.find_subjects(object=device_id, predicate=PRED.hasDevice, subject_type=RT.InstrumentSite, id_only=False)
+        if not sites:
+            raise BadRequest("No site is associated with this data product")
+        site = sites[0]
+        rd = site.reference_designator
+        return rd
 
 
     def get_data_product_stream_definition(self, data_product_id=''):

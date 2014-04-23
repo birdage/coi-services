@@ -11,6 +11,8 @@ Supports the following ops:
 - configure_instance: using a config csv lookup file, update the AgentInstance driver_config
 - activate_persistence: activate persistence for the data products of the devices
 - suspend_persistence: suspend persistence for the data products of the devices
+- cleanup_persistence: Deletes remnant persistent records about activated persistence in the system
+- cleanup_agent: deletes remnant persistent records about running agents in the system
 - recover_data: requires start and stop dates, issues reachback command for instrument agents.  Running this command
                 against other agents will get a warning.
 - set_calibration: add or replace calibration information for devices and their data products
@@ -20,16 +22,20 @@ Supports the following ops:
 - delete_dataset: remove Dataset resource and coverage
 - delete_all_data: remove all device related DataProduct, StreamDefinition, Dataset, resources and coverages
 - delete_all_device: remove all device related resources and all from delete_all_data
-- delete_all_site: remove all device resources as in delete_all_device and matching site resources
+- delete_site: remove site resources
 - activate_deployment: If device has Deployments, activate the current one
 - deactivate_deployment: If device has an active Deployment, deactivate it
 
 Supports the following arguments:
 - instrument, platform, device_name: name of device. Resource ids (uuid) can be used instead of names.
 - agent_name: name of agent instance. Resource ids (uuid) can be used instead of names.
-- recurse: given platform device, execute op on plaform and all child platforms and instruments
+- preload_id: preload id or list of preload ids of devices
+- recurse: given platform device, execute op on platform and all child platforms and instruments
 - fail_fast: if True, exit after the first exception. Otherwise log errors only
 - recover_start, recover_end: floating point strings representing seconds since 1900-01-01 00:00:00 (NTP64 Epoch)
+- force: if True, ignore some warning conditions and move on or clear up
+- autoclean: if True, try to clean up resources directly after failed operations
+- verbose: if True, log more messages for detailed steps
 
 Invoke via command line like this:
     bin/pycc -x ion.agents.agentctrl.AgentControl instrument='CTDPF'
@@ -39,7 +45,7 @@ Invoke via command line like this:
     bin/pycc -x ion.agents.agentctrl.AgentControl platform='uuid' op=config_instance cfg=file.csv recurse=True
     bin/pycc -x ion.agents.agentctrl.AgentControl platform='uuid' op=set_calibration cfg=file.csv recurse=True
     bin/pycc -x ion.agents.agentctrl.AgentControl instrument='CTDPF' op=recover_data recover_start=0.0 recover_end=1.0
-    and others (see Confluence page)
+    and others (see above and Confluence page)
 
 TODO:
 - Ability to apply to all platforms (maybe a facility/site), not just one
@@ -48,7 +54,6 @@ TODO:
 - Share agent definition or resource in facility
 - Change owner of resource
 - Change contact info, metadata of resource based on spreadsheet
-- Need to make service calls with system actor?
 """
 
 __author__ = 'Michael Meisinger, Ian Katz, Bill French, Luke Campbell'
@@ -62,15 +67,14 @@ from pyon.agent.agent import ResourceAgentClient, ResourceAgentEvent
 from pyon.public import RT, log, PRED, OT, ImmediateProcess, BadRequest, NotFound, LCS, EventPublisher
 
 from ion.core.includes.mi import DriverEvent
+from ion.services.dm.inventory.dataset_management_service import DatasetManagementService
 from ion.util.parse_utils import parse_dict
 
-from interface.objects import AgentCommand, Site, TemporalBounds
+from interface.objects import AgentCommand, Site, TemporalBounds, AgentInstance, Device
 from interface.services.sa.idata_acquisition_management_service import DataAcquisitionManagementServiceProcessClient
 from interface.services.sa.idata_product_management_service import DataProductManagementServiceProcessClient
-from interface.services.sa.iinstrument_management_service import InstrumentManagementServiceClient
-from interface.services.sa.iobservatory_management_service import ObservatoryManagementServiceClient
-
-from ion.services.dm.inventory.dataset_management_service import DatasetManagementService
+from interface.services.sa.iinstrument_management_service import InstrumentManagementServiceProcessClient
+from interface.services.sa.iobservatory_management_service import ObservatoryManagementServiceProcessClient
 
 
 class AgentControl(ImmediateProcess):
@@ -79,9 +83,9 @@ class AgentControl(ImmediateProcess):
         self.rr = self.container.resource_registry
 
         self.op = self.CFG.get("op", "start")
-        if not self.op or self.op.startswith("_") or not hasattr(self, self.op):
-            if self.op not in {"start", "stop", "load"}:
-                raise BadRequest("Operation %s unknown", self.op)
+        if not self.op or self.op.startswith("_") or (not hasattr(self, self.op) and self.op not in {"start", "stop", "load"}):
+            raise BadRequest("Operation %s unknown", self.op)
+        log.info("OPERATION: %s", self.op)
 
         dataset_name = self.CFG.get("dataset", None)
         device_name = self.CFG.get("device_name", None) or self.CFG.get("instrument", None) or self.CFG.get("platform", None)
@@ -90,54 +94,89 @@ class AgentControl(ImmediateProcess):
 
         self.recurse = self.CFG.get("recurse", False)
         self.fail_fast = self.CFG.get("fail_fast", False)
+        self.force = self.CFG.get("force", False)
+        self.autoclean = self.CFG.get("autoclean", False)
+        self.verbose = self.CFG.get("verbose", False)
+        self.timeout = self.CFG.get("timeout", 120)
         self.cfg_mappings = {}
-
+        self.system_actor = None
+        self.errors = []
         self._recover_data_status = {'ignored': [], 'success': [], 'fail': []}
 
-        if not resource_name:
-            raise BadRequest("Must provide ExternalDataset, Device or AgentInstance resource name or id")
+        preload_id = self.CFG.get("preload_id", None)
+        if preload_id:
+            preload_ids = preload_id.split(",")
+            for pid in preload_ids:
+                res_objs, _ = self.rr.find_resources_ext(alt_id_ns="PRE", alt_id=pid, id_only=False)
+                if res_objs:
+                    res_obj = res_objs[0]
+                    log.info("Found preload id=%s as %s '%s' id=%s", pid, res_obj.type_, res_obj.name, res_obj._id)
+                    self._execute(res_obj)
 
-        resource = None
-        try:
-            log.debug("Looking for a resource with id %s", dataset_name)
-            resource = self.rr.read(resource_name)
-        except NotFound:
-            pass
+        else:
+            if not resource_name:
+                raise BadRequest("Must provide ExternalDataset, Device or AgentInstance resource name or id")
 
-        if not resource:
-            if dataset_name:
-                log.debug("Looking for an ExternalDataset with name %s", dataset_name)
-                objects,_ = self.rr.find_resources(RT.ExternalDataset, name=dataset_name, id_only=False)
-            elif device_name:
-                log.debug("Looking for an InstrumentDevice with name %s", device_name)
-                objects,_ = self.rr.find_resources(RT.InstrumentDevice, name=device_name, id_only=False)
+            resource = None
+            try:
+                log.debug("Looking for a resource with id %s", dataset_name)
+                resource = self.rr.read(resource_name)
+            except NotFound:
+                pass
+
+            if not resource:
+                if dataset_name:
+                    log.debug("Looking for an ExternalDataset with name %s", dataset_name)
+                    objects,_ = self.rr.find_resources(RT.ExternalDataset, name=dataset_name, id_only=False)
+                elif device_name:
+                    log.debug("Looking for an InstrumentDevice with name %s", device_name)
+                    objects,_ = self.rr.find_resources(RT.InstrumentDevice, name=device_name, id_only=False)
+                    if not objects:
+                        log.debug("Looking for a PlatformDevice with name %s", device_name)
+                        objects,_ = self.rr.find_resources(RT.PlatformDevice, name=device_name, id_only=False)
+                elif agent_name:
+                    log.debug("Looking for an AgentInstance with name %s", agent_name)
+                    objects,_ = self.rr.find_resources(RT.ExternalDatasetAgentInstance, name=agent_name, id_only=False)
+                    if not objects:
+                        objects,_ = self.rr.find_resources(RT.InstrumentAgentInstance, name=agent_name, id_only=False)
+                    if not objects:
+                        objects,_ = self.rr.find_resources(RT.PlatformAgentInstance, name=agent_name, id_only=False)
+
                 if not objects:
-                    log.debug("Looking for a PlatformDevice with name %s", device_name)
-                    objects,_ = self.rr.find_resources(RT.PlatformDevice, name=device_name, id_only=False)
-            elif agent_name:
-                log.debug("Looking for an ExternalDatasetAgentInstance with name %s", agent_name)
-                objects,_ = self.rr.find_resources(RT.ExternalDatasetAgentInstance, name=agent_name, id_only=False)
+                    raise BadRequest("Could not find resource with name %s", resource_name)
+                elif len(objects) > 1:
+                    log.warn("More than one resource found with name %s. Using id=%s", dataset_name, objects[0])
+                resource = objects[0]
 
-            if not objects:
-                raise BadRequest("Could not find resource with name %s", resource_name)
-            elif len(objects) > 1:
-                log.warn("More than one resource found with name %s. Using id=%s", dataset_name, objects[0])
-            resource = objects[0]
+            self._execute(resource)
 
-        resource_id, eda_instance_id = None, None
-        if resource.type_ in (RT.ExternalDataset, RT.InstrumentDevice, RT.PlatformDevice):
+        if self.errors:
+            log.warn("ERROR: There were %s errors:\n%s", len(self.errors),
+                     "\n".join("dev_id=%(resource_id)s: %(msg)s" % err for err in self.errors))
+        else:
+            log.info("Completed, NO errors.")
+
+        log.info("======================== ION AgentControl completed ========================")
+
+    def _execute(self, resource):
+        """Executes script for one resource"""
+        resource_id, ai_id = None, None
+        if resource.type_ == RT.ExternalDataset or isinstance(resource, Device):
             resource_id = resource._id
-        elif resource.type_ == RT.ExternalDatasetAgentInstance:
-            eda_instance_id = resource._id
+        elif isinstance(resource, AgentInstance):
+            ai_id = resource._id
+        elif isinstance(resource, Site):
+            resource_id = resource._id
         else:
             log.warn("Unexpected resource type: %s", resource.type_)
+            resource_id = resource._id
 
-        self._execute_op(eda_instance_id, resource_id)
-
-        log.info("======================== OOINet AgentControl completed ========================")
+        # This does all the work and will recurse if desired
+        self._execute_op(ai_id, resource_id)
 
     def _execute_op(self, agent_instance_id, resource_id):
-        child_devices = None  # Need to save this for the case the device is deleted during the op
+        """Executes op on one resource/agent including recursive applications."""
+        child_res = None  # Need to save this for the case the device is deleted during the op
         try:
             if resource_id is None and agent_instance_id:
                 resource_id = self.rr.read_subject(object=agent_instance_id,
@@ -145,13 +184,15 @@ class AgentControl(ImmediateProcess):
                                                    id_only=True)
 
             res_obj = self.rr.read(resource_id)
-            child_devices, _ = self.rr.find_objects(resource_id, PRED.hasDevice, id_only=False)
+            if isinstance(res_obj, Device):
+                child_res, _ = self.rr.find_objects(resource_id, PRED.hasDevice, id_only=False)
+            elif isinstance(res_obj, Site):
+                child_res, _ = self.rr.find_objects(resource_id, PRED.hasSite, id_only=False)
 
-            if agent_instance_id is None:
+            if agent_instance_id is None and isinstance(res_obj, Device):
                 agent_instance_id = self._get_agent_instance_id(resource_id)
 
             log.info("--- Executing %s on '%s' id=%s agent=%s ---", self.op, res_obj.name, resource_id, agent_instance_id)
-
 
             if self.op == "start" or self.op == "load":
                 self.start_agent(agent_instance_id, resource_id)
@@ -162,22 +203,27 @@ class AgentControl(ImmediateProcess):
                 opfunc(agent_instance_id, resource_id)
 
         except Exception:
-            log.exception("Could not %s agent %s for device %s", self.op, agent_instance_id, resource_id)
+            self._log_error(agent_instance_id, resource_id, logexc=True,
+                            msg="Failed op=%s on device=%s agent=%s" % (self.op, resource_id, agent_instance_id))
             if self.fail_fast:
                 raise
 
         if self.recurse:
-            if child_devices is None:
-                child_devices, _ = self.rr.find_objects(resource_id, PRED.hasDevice, id_only=False)
-            if child_devices:
-                log.debug("recurse==True. Executing %s on %s child devices", self.op, len(child_devices))
-            for ch_obj in child_devices:
+            if child_res is None:
+                if isinstance(res_obj, Device):
+                    child_res, _ = self.rr.find_objects(resource_id, PRED.hasDevice, id_only=False)
+                elif isinstance(res_obj, Site):
+                    child_res, _ = self.rr.find_objects(resource_id, PRED.hasSite, id_only=False)
+            if child_res:
+                log.debug("recurse==True. Executing op=%s on %s child devices", self.op, len(child_res))
+            for ch_obj in child_res:
                 ch_id = ch_obj._id
                 agent_instance_id = None
                 try:
                     self._execute_op(None, ch_id)
                 except Exception:
-                    log.exception("Could not %s agent %s for child device %s", self.op, agent_instance_id, ch_id)
+                    self._log_error(agent_instance_id, resource_id, logexc=True,
+                                    msg="Failed op=%s on child device=%s agent=%s" % (self.op, ch_id, agent_instance_id))
                     if self.fail_fast:
                         raise
 
@@ -185,105 +231,152 @@ class AgentControl(ImmediateProcess):
             self._recover_data_report()
 
     def _get_agent_instance_id(self, resource_id):
-        dsaids, _ = self.rr.find_objects(subject=resource_id,
-                                         predicate=PRED.hasAgentInstance,
-                                         object_type=RT.ExternalDatasetAgentInstance,
-                                         id_only=True)
+        aids, _ = self.rr.find_objects(subject=resource_id,
+                                       predicate=PRED.hasAgentInstance,
+                                       id_only=True)
 
-        iaids, _ = self.rr.find_objects(subject=resource_id,
-                                        predicate=PRED.hasAgentInstance,
-                                        object_type=RT.InstrumentAgentInstance,
-                                        id_only=True)
-
-        paids, _ = self.rr.find_objects(subject=resource_id,
-                                        predicate=PRED.hasAgentInstance,
-                                        object_type=RT.PlatformAgentInstance,
-                                        id_only=True)
-
-        aids = dsaids + iaids + paids
         if len(aids) > 1:
-            log.error("Multiple agent instances found")
-            raise BadRequest("Failed to identify agent instance")
+            raise BadRequest("Multiple agent instances found")
+        if aids:
+            log.debug("Found agent instance ID: %s", aids[0])
+            return aids[0]
 
-        if len(aids) == 0:
-            log.error("Agent instance not found")
-            raise BadRequest("Failed to identify agent instance")
+        log.debug("Agent instance not found for device=%s", resource_id)
+        return None
 
-        log.info("Found agent instance ID: %s", aids[0])
-        return aids[0]
+    def _get_system_actor_headers(self):
+        if self.system_actor is None:
+            system_actor, _ = self.rr.find_resources(RT.ActorIdentity, name=self.CFG.system.system_actor, id_only=False)
+            self.system_actor = system_actor[0]._id if system_actor else 'anonymous'
+        return {'ion-actor-id': self.system_actor,
+                'ion-actor-roles': {'ION': ['ION_MANAGER', 'ORG_MANAGER']},
+                'expiry':'0'}
+
+    def _log_error(self, agent_instance_id, resource_id, msg, logexc=False):
+        self.errors.append(dict(resource_id=resource_id, agent_instance_id=agent_instance_id, msg=msg))
+        if logexc:
+            log.exception(msg)
+
+    # -------------------------------------------------------------------------
+    # Control commands
 
     def start_agent(self, agent_instance_id, resource_id):
         if not agent_instance_id or not resource_id:
-            log.warn("Could not %s agent %s for device %s", self.op, agent_instance_id, resource_id)
+            log.warn("Could not op=%s agent %s for device %s", self.op, agent_instance_id, resource_id)
             return
 
         res_obj = self.rr.read(resource_id)
+        ai_obj = self.rr.read(agent_instance_id)
+
+        try:
+            client = ResourceAgentClient(resource_id, process=self)
+            if self.force:
+                log.warn("Agent for resource %s seems running - continuing", resource_id)
+                if self.autoclean:
+                    self.cleanup_agent(agent_instance_id, resource_id)
+            else:
+                log.warn("Agent for resource %s seems running", resource_id)
+                return
+        except NotFound:
+            pass  # This is expected
 
         log.info('Starting agent...')
-        if res_obj.type_ == RT.ExternalDatasetAgentInstance or res_obj == RT.ExternalDataset:
+        if ai_obj.type_ == RT.ExternalDatasetAgentInstance:
             dams = DataAcquisitionManagementServiceProcessClient(process=self)
-            dams.start_external_dataset_agent_instance(agent_instance_id)
-        elif res_obj.type_ == RT.InstrumentDevice:
-            ims = InstrumentManagementServiceClient()
-            ims.start_instrument_agent_instance(agent_instance_id)
-        elif res_obj.type_ == RT.PlatformDevice:
-            ims = InstrumentManagementServiceClient()
-            ims.start_platform_agent_instance(agent_instance_id)
+            dams.start_external_dataset_agent_instance(agent_instance_id, headers=self._get_system_actor_headers(),
+                                                       timeout=self.timeout)
+        elif ai_obj.type_ == RT.InstrumentAgentInstance:
+            ims = InstrumentManagementServiceProcessClient(process=self)
+            ims.start_instrument_agent_instance(agent_instance_id, headers=self._get_system_actor_headers(),
+                                                timeout=self.timeout)
+        elif ai_obj.type_ == RT.PlatformAgentInstance:
+            ims = InstrumentManagementServiceProcessClient(process=self)
+            ims.start_platform_agent_instance(agent_instance_id, headers=self._get_system_actor_headers(),
+                                              timeout=self.timeout)
         else:
-            BadRequest("Attempt to start unsupported agent type: %s", res_obj.type_)
+            BadRequest("Attempt to start unsupported agent type: %s", ai_obj.type_)
         log.info('Agent started!')
 
         activate = self.CFG.get("activate", True)
         if activate:
             log.info('Activating agent...')
             client = ResourceAgentClient(resource_id, process=self)
-            client.execute_agent(AgentCommand(command=ResourceAgentEvent.INITIALIZE))
-            client.execute_agent(AgentCommand(command=ResourceAgentEvent.GO_ACTIVE))
-            client.execute_agent(AgentCommand(command=ResourceAgentEvent.RUN))
-            client.execute_resource(command=AgentCommand(command=DriverEvent.START_AUTOSAMPLE))
+            client.execute_agent(AgentCommand(command=ResourceAgentEvent.INITIALIZE),
+                                 headers=self._get_system_actor_headers(), timeout=self.timeout)
+            client.execute_agent(AgentCommand(command=ResourceAgentEvent.GO_ACTIVE),
+                                 headers=self._get_system_actor_headers(), timeout=self.timeout)
+            client.execute_agent(AgentCommand(command=ResourceAgentEvent.RUN),
+                                 headers=self._get_system_actor_headers(), timeout=self.timeout)
+            client.execute_resource(command=AgentCommand(command=DriverEvent.START_AUTOSAMPLE),
+                                    headers=self._get_system_actor_headers(), timeout=self.timeout)
 
-            log.info('Agent active!')
+            log.info('Agent in auto-sample mode!')
 
     def stop_agent(self, agent_instance_id, resource_id):
-        res_obj = self.rr.read(resource_id)
-
         if not agent_instance_id or not resource_id:
-            log.warn("Could not %s agent %s for device %s", self.op, agent_instance_id, resource_id)
             return
+
+        res_obj = self.rr.read(resource_id)
+        ai_obj = self.rr.read(agent_instance_id)
 
         try:
             client = ResourceAgentClient(resource_id, process=self)
         except NotFound:
-            log.warn("Agent for resource %s seems not running", resource_id)
+            if self.force:
+                log.warn("Agent for resource %s seems not running - continuing", resource_id)
+            else:
+                log.info("Agent for resource %s seems not running", resource_id)
+                return
 
         log.info('Stopping agent...')
 
-        if res_obj.type_ == RT.ExternalDatasetAgentInstance or res_obj == RT.ExternalDataset:
+        if ai_obj.type_ == RT.ExternalDatasetAgentInstance:
             dams = DataAcquisitionManagementServiceProcessClient(process=self)
             try:
-                dams.stop_external_dataset_agent_instance(agent_instance_id)
+                dams.stop_external_dataset_agent_instance(agent_instance_id,
+                                                          headers=self._get_system_actor_headers(), timeout=self.timeout)
+                log.info('Agent stopped!')
             except NotFound:
                 log.warn("Agent for resource %s not found", resource_id)
-        elif res_obj.type_ == RT.InstrumentDevice:
-            ims = InstrumentManagementServiceClient()
+                if self.autoclean:
+                    self.cleanup_agent(agent_instance_id, resource_id)
+            except Exception:
+                if self.autoclean:
+                    self.cleanup_agent(agent_instance_id, resource_id)
+                raise
+        elif ai_obj.type_ == RT.InstrumentAgentInstance:
+            ims = InstrumentManagementServiceProcessClient(process=self)
             try:
-                ims.stop_instrument_agent_instance(agent_instance_id)
+                ims.stop_instrument_agent_instance(agent_instance_id,
+                                                   headers=self._get_system_actor_headers(), timeout=self.timeout)
+                log.info('Agent stopped!')
             except NotFound:
                 log.warn("Agent for resource %s not found", resource_id)
-        elif res_obj.type_ == RT.PlatformDevice:
-            ims = InstrumentManagementServiceClient()
+                if self.autoclean:
+                    self.cleanup_agent(agent_instance_id, resource_id)
+            except Exception:
+                if self.autoclean:
+                    self.cleanup_agent(agent_instance_id, resource_id)
+                raise
+        elif ai_obj.type_ == RT.PlatformAgentInstance:
+            ims = InstrumentManagementServiceProcessClient(process=self)
             try:
-                ims.stop_platform_agent_instance(agent_instance_id)
+                ims.stop_platform_agent_instance(agent_instance_id,
+                                                 headers=self._get_system_actor_headers(), timeout=self.timeout)
+                log.info('Agent stopped!')
             except NotFound:
                 log.warn("Agent for resource %s not found", resource_id)
+                if self.autoclean:
+                    self.cleanup_agent(agent_instance_id, resource_id)
+            except Exception:
+                if self.autoclean:
+                    self.cleanup_agent(agent_instance_id, resource_id)
+                raise
         else:
-            BadRequest("Attempt to start unsupported agent type: %s", res_obj.type_)
-
-        log.info('Agent stopped!')
+            BadRequest("Attempt to stop unsupported agent type: %s", ai_obj.type_)
 
     def config_instance(self, agent_instance_id, resource_id):
         if not agent_instance_id:
-            log.warn("Could not %s agent %s for device %s", self.op, agent_instance_id, resource_id)
             return
 
         cfg_file = self.CFG.get("cfg", None)
@@ -321,8 +414,8 @@ class AgentControl(ImmediateProcess):
         self.rr.update(edai)
 
     def set_calibration(self, agent_instance_id, resource_id):
-        if not agent_instance_id:
-            log.warn("Could not %s agent %s for device %s", self.op, agent_instance_id, resource_id)
+        res_obj = self.rr.read(resource_id)
+        if res_obj.type_ != RT.InstrumentDevice:
             return
 
         cfg_file = self.CFG.get("cfg", None)
@@ -340,8 +433,6 @@ class AgentControl(ImmediateProcess):
                     self.cfg_mappings.setdefault(device_id, {})[param_name] = {k:v for k, v in row.iteritems() if k not in {"ID", "Name", "Value"}}
                     self.cfg_mappings[device_id][param_name]["value"] = row["Value"]  # Make sure it exists
 
-        res_obj = self.rr.read(resource_id)
-
         # Device has no reference designator - but use preload ID as reference designator
         alt_ids = []
         for aid in res_obj.alt_ids:
@@ -354,6 +445,7 @@ class AgentControl(ImmediateProcess):
 
         dev_cfg = self.cfg_mappings.get(resource_id, None) or self.cfg_mappings.get(device_rd, None)
         if not dev_cfg:
+            log.warn("Reference designator %s not found in calibrations file" % device_rd)
             return
         log.info("Setting calibration for device %s (RD %s) '%s': %s", resource_id, device_rd, res_obj.name, dev_cfg)
 
@@ -362,8 +454,6 @@ class AgentControl(ImmediateProcess):
         dp_objs_filtered = [dp for dp in dp_objs if dp.processing_level_code == "Parsed"]
         for dp_obj in dp_objs_filtered:
             self._set_calibration_for_data_product(dp_obj, dev_cfg)
-
-        log.info("Calibration set for device %s (RD %s) '%s'", resource_id, device_rd, res_obj.name)
 
     def _set_calibration_for_data_product(self, dp_obj, dev_cfg):
         from ion.util.direct_coverage_utils import DirectCoverageAccess
@@ -375,7 +465,7 @@ class AgentControl(ImmediateProcess):
         if not dataset_ids:
             data_product_management = DataProductManagementServiceProcessClient(process=self)
             log.debug(" Creating dataset for data product %s", dp_obj.name)
-            data_product_management.create_dataset_for_data_product(dp_obj._id)
+            data_product_management.create_dataset_for_data_product(dp_obj._id, headers=self._get_system_actor_headers())
             dataset_ids, _ = self.rr.find_objects(dp_obj, PRED.hasDataset, id_only=True)
             if not dataset_ids:
                 raise NotFound('No datasets were found for this data product, ensure that it was created')
@@ -396,32 +486,92 @@ class AgentControl(ImmediateProcess):
         log.info("Calibration set for data product '%s' in %s coverages", dp_obj.name, len(dataset_ids))
 
     def activate_persistence(self, agent_instance_id, resource_id):
-        if not agent_instance_id or not resource_id:
-            log.warn("Could not %s agent %s for device %s", self.op, agent_instance_id, resource_id)
-            return
-
         dpms = DataProductManagementServiceProcessClient(process=self)
         dp_objs, _ = self.rr.find_objects(resource_id, PRED.hasOutputProduct, id_only=False)
         for dp in dp_objs:
             try:
+                if dpms.is_persisted(dp._id, headers=self._get_system_actor_headers()):
+                    if self.force:
+                        log.warn("DataProduct %s '%s' is currently persisted - continuing", dp._id, dp.name)
+                    else:
+                        log.warn("DataProduct %s '%s' is currently persisted", dp._id, dp.name)
+                        continue
                 log.info("Activating persistence for '%s'", dp.name)
-                dpms.activate_data_product_persistence(dp._id)
+                dpms.activate_data_product_persistence(dp._id, headers=self._get_system_actor_headers(), timeout=self.timeout)
             except Exception:
-                log.exception("Could not activate persistence")
+                self._log_error(agent_instance_id, resource_id, logexc=True,
+                                msg="Could not activate persistence for dp_id=%s" % (dp._id))
 
     def suspend_persistence(self, agent_instance_id, resource_id):
-        if not agent_instance_id or not resource_id:
-            log.warn("Could not %s agent %s for device %s", self.op, agent_instance_id, resource_id)
-            return
-
         dpms = DataProductManagementServiceProcessClient(process=self)
         dp_objs, _ = self.rr.find_objects(resource_id, PRED.hasOutputProduct, id_only=False)
         for dp in dp_objs:
             try:
                 log.info("Suspending persistence for '%s'", dp.name)
-                dpms.suspend_data_product_persistence(dp._id)
+                dpms.suspend_data_product_persistence(dp._id, headers=self._get_system_actor_headers(), timeout=self.timeout)
             except Exception:
-                log.exception("Could not suspend persistence")
+                self._log_error(agent_instance_id, resource_id, logexc=True,
+                                msg="Could not suspend persistence for dp_id=%s" % (dp._id))
+                if self.autoclean:
+                    self._cleanup_persistence(dp)
+
+    def cleanup_persistence(self, agent_instance_id, resource_id):
+        dpms = DataProductManagementServiceProcessClient(process=self)
+        dp_objs, _ = self.rr.find_objects(resource_id, PRED.hasOutputProduct, id_only=False)
+        for dp in dp_objs:
+            self._cleanup_persistence(dp)
+
+    def _cleanup_persistence(self, data_product_obj):
+        """Deletes remnant persistent records about activated persistence in the system"""
+        # Cleanup ExchangeName, Subscription,
+        try:
+            log.info("Cleaning up persistence for '%s'", data_product_obj.name)
+            count_sub, count_xn, count_ds = 0, 0, 0
+            st_objs, _ = self.rr.find_objects(data_product_obj._id, PRED.hasStream, id_only=False)
+            for st_obj in st_objs:
+                st_obj.persisted = False
+                self.rr.update(st_obj)
+
+                assocs = self.rr.find_associations(PRED.hasStream, object=st_obj._id, id_only=False)
+                for assoc in assocs:
+                    if assoc.st == RT.Dataset:
+                        self.rr.delete_association(assoc)
+                        count_ds += 1
+
+                # Delete Subscription, ExchangeName, Process
+                ingcfg_id = data_product_obj.dataset_configuration_id
+                if ingcfg_id:
+                    sub_objs, _ = self.rr.find_objects(ingcfg_id, predicate=PRED.hasSubscription, id_only=False)
+                    for sub_obj in sub_objs:
+                        if self.rr.find_associations(subject=sub_obj._id, object=st_obj._id):
+                            # TODO: Could attempt Exchange _unbind cleanup. Not needed for now
+
+                            xn_ids, _ = self.rr.find_subjects(object=sub_obj._id, predicate=PRED.hasSubscription,
+                                                               subject_type=RT.ExchangeName, id_only=True)
+                            if xn_ids:
+                                self.rr.rr_store.delete_mult(xn_ids)
+                                count_xn += len(xn_ids)
+
+                            # Delete Subscription with all associations
+                            self.rr.delete(sub_obj._id)
+                            count_sub += 1
+
+            log.info("Persistence cleaned up for data product %s '%s': %s Subscription, %s ExchangeName, %s Stream assoc",
+                     data_product_obj._id, data_product_obj.name, count_sub, count_xn, count_ds)
+
+        except Exception:
+            self._log_error(None, None, logexc=True,
+                            msg="Could not cleanup persistence for dp_id=%s" % (data_product_obj._id))
+
+    def cleanup_agent(self, agent_instance_id, resource_id):
+        """Deletes remnant persistent records about running agents in the system"""
+        # Cleanup directory entry
+        agent_procs = self.container.directory.find_by_value('/Agents', 'resource_id', resource_id)
+        if agent_procs:
+            for ap in agent_procs:
+                self.container.directory.unregister_safe("/Agents", ap.key)
+        if agent_procs:
+            log.debug("Cleaned up agent directory for device %s", resource_id)
 
     def recover_data(self, agent_instance_id, resource_id):
         res_obj = self.rr.read(resource_id)
@@ -442,7 +592,8 @@ class AgentControl(ImmediateProcess):
         try:
             ia_client = ResourceAgentClient(resource_id, process=self)
             log.info('Got ia client %s.', str(ia_client))
-            ia_client.execute_resource(command=AgentCommand(command=DriverEvent.GAP_RECOVERY, args=[self.recover_start, self.recover_end]))
+            ia_client.execute_resource(command=AgentCommand(command=DriverEvent.GAP_RECOVERY, args=[self.recover_start, self.recover_end]),
+                                       headers=self._get_system_actor_headers())
 
             self._recover_data_status['success'].append(res_obj.name)
         except Exception as e:
@@ -506,12 +657,12 @@ class AgentControl(ImmediateProcess):
         # Find data products from device id
         dp_objs, _ = self.rr.find_objects(resource_id, PRED.hasOutputProduct, RT.DataProduct, id_only=False)
         for dp_obj in dp_objs:
-            dpms.create_dataset_for_data_product(dp_obj._id)
+            dpms.create_dataset_for_data_product(dp_obj._id, headers=self._get_system_actor_headers())
 
         log.info("Checked datasets for device %s '%s': %s", resource_id, res_obj.name, len(dp_objs))
 
     def delete_dataset(self, agent_instance_id, resource_id):
-
+        """Deletes dataset and coverage files for all of a device's data products"""
         res_obj = self.rr.read(resource_id)
         dpms = DataProductManagementServiceProcessClient(process=self)
 
@@ -519,8 +670,11 @@ class AgentControl(ImmediateProcess):
         count_ds = 0
         dp_objs, _ = self.rr.find_objects(resource_id, PRED.hasOutputProduct, RT.DataProduct, id_only=False)
         for dp_obj in dp_objs:
-            if dpms.is_persisted(dp_obj._id):
-                raise BadRequest("DataProduct %s '%s' is currently persisted", dp_obj._id, dp_obj.name)
+            if dpms.is_persisted(dp_obj._id, headers=self._get_system_actor_headers()):
+                if self.force:
+                    log.warn("DataProduct %s '%s' is currently persisted - continuing", dp_obj._id, dp_obj.name)
+                else:
+                    raise BadRequest("DataProduct %s '%s' is currently persisted. Use force=True to ignore", dp_obj._id, dp_obj.name)
 
             ds_objs, _ = self.rr.find_objects(dp_obj._id, PRED.hasDataset, RT.Dataset, id_only=False)
             for ds_obj in ds_objs:
@@ -530,7 +684,7 @@ class AgentControl(ImmediateProcess):
                     log.info("Removing coverage tree at %s", cov_path)
                     shutil.rmtree(cov_path)
                 else:
-                    raise OSError("Coverage path does not exist %s" % cov_path)
+                    log.warn("Coverage path does not exist %s" % cov_path)
 
                 # Delete Dataset and associations
                 self.rr.delete(ds_obj._id)
@@ -545,9 +699,16 @@ class AgentControl(ImmediateProcess):
         res_obj = self.rr.read(resource_id)
 
         # Find parsed data product from device id
+        dpms = DataProductManagementServiceProcessClient(process=self)
         count_dp, count_sd, count_st = 0, 0, 0
         dp_objs, _ = self.rr.find_subjects(RT.DataProduct, PRED.hasSource, resource_id, id_only=False)
         for dp_obj in dp_objs:
+            if dpms.is_persisted(dp_obj._id, headers=self._get_system_actor_headers()):
+                if self.force:
+                    log.warn("DataProduct %s '%s' is currently persisted - continuing", dp_obj._id, dp_obj.name)
+                else:
+                    raise BadRequest("DataProduct %s '%s' is currently persisted. Use force=True to ignore", dp_obj._id, dp_obj.name)
+
             # Find and delete Stream
             st_objs, _ = self.rr.find_objects(dp_obj._id, PRED.hasStream, RT.Stream, id_only=False)
             for st_obj in st_objs:
@@ -569,14 +730,23 @@ class AgentControl(ImmediateProcess):
 
     def delete_all_device(self, agent_instance_id, resource_id):
         """Deletes all resources related to a device"""
-        try:
-            self.delete_all_data(agent_instance_id, resource_id)
-        except Exception:
-            log.exception("Delete all data")
-
         res_obj = self.rr.read(resource_id)
+        if not isinstance(res_obj, Device):
+            raise BadRequest("Resource is not a device but: %s" % res_obj.type_)
 
-        # Find parsed data product from device id
+        # Check if agent is running
+        try:
+            client = ResourceAgentClient(resource_id, process=self)
+            if self.force:
+                log.warn("Agent for %s '%s' seems active - continuing", resource_id, res_obj.name)
+            else:
+                raise BadRequest("Agent for %s '%s' seems active. Use force=True to ignore" % (resource_id, res_obj.name))
+        except NotFound:
+            pass  # That's what we expect
+
+        # Attempt to delete dataset, then all data resources. Fail if this fails.
+        self.delete_all_data(agent_instance_id, resource_id)
+
         count_dev, count_dp, count_dep, count_ai = 0, 0, 0, 0
 
         # Delete DataProducers
@@ -604,30 +774,18 @@ class AgentControl(ImmediateProcess):
         log.info("Device resources deleted for device %s '%s': %s Device, %s DataProducer, %s Deployment, %s AgentInstance",
                  resource_id, res_obj.name, count_dev, count_dp, count_dep, count_ai)
 
+    def delete_site(self, agent_instance_id, resource_id):
+        """Deletes site resources"""
+        if not resource_id:
+            log.warn("No resource id for op=%s", self.op)
+            return
 
-    def delete_all_site(self, agent_instance_id, resource_id):
-        """Deletes all resources related to a device and its matching preload site"""
         res_obj = self.rr.read(resource_id)
+        if not isinstance(res_obj, Site):
+            raise BadRequest("Resource is not a site but: %s" % res_obj.type_)
 
-        alt_ids = [aid[4:-3] for aid in res_obj.alt_ids if aid.startswith("PRE:") and aid.endswith("_ID")]
-        device_rd = alt_ids[0] if alt_ids else None
-
-        # Delete Site
-        if device_rd:
-            count_site = 0
-            site_objs, _ = self.rr.find_resources_ext(alt_id_ns="PRE", alt_id=device_rd)
-            if site_objs:
-                site_obj = site_objs[0]
-                if isinstance(site_obj, Site):
-                    self.rr.delete(site_obj._id)
-                    count_site += 1
-
-            log.info("Site resources deleted for device %s '%s': %s Site",
-                     resource_id, res_obj.name, count_site)
-
-        # Delete all device resources
-        self.delete_all_device(agent_instance_id, resource_id)
-
+        self.rr.delete(res_obj._id)
+        log.info("Site resources deleted for site %s '%s': 1 Site", resource_id, res_obj.name)
 
     def activate_deployment(self, agent_instance_id, resource_id):
         # For current device, find all deployments. Activate the one that
@@ -635,19 +793,19 @@ class AgentControl(ImmediateProcess):
         if dep_objs:
             current_dep = self._get_current_deployment(dep_objs, for_activate=True)
             if current_dep:
-                obs_ms = ObservatoryManagementServiceClient()
-                obs_ms.activate_deployment(current_dep._id)
+                obs_ms = ObservatoryManagementServiceProcessClient(process=self)
+                obs_ms.activate_deployment(current_dep._id, headers=self._get_system_actor_headers())
 
     def deactivate_deployment(self, agent_instance_id, resource_id):
         dep_objs, _ = self.rr.find_objects(resource_id, PRED.hasDeployment, RT.Deployment, id_only=False)
         if dep_objs:
             current_dep = self._get_current_deployment(dep_objs, for_activate=False)
             if current_dep:
-                obs_ms = ObservatoryManagementServiceClient()
-                obs_ms.deactivate_deployment(current_dep._id)
+                obs_ms = ObservatoryManagementServiceProcessClient(process=self)
+                obs_ms.deactivate_deployment(current_dep._id, headers=self._get_system_actor_headers())
 
     def _get_current_deployment(self, dep_objs, for_activate=True):
-        # TODO: How to find current deployment
+        # TODO: How to find current deployment - wait for R3 M193
         # First pass: Eliminate all RETIRED and past deployments (end date before now)
         now = time.time()
         filtered_dep = []

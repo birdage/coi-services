@@ -102,7 +102,6 @@ class DatasetManagementService(BaseDatasetManagementService):
             log.debug('DM:create dataset: %s -- dataset_id: %s', name, dataset_id)
             self._create_single_resource(dataset_id, parameter_dict)
 
-
         return dataset_id
 
     def read_dataset(self, dataset_id=''):
@@ -742,6 +741,12 @@ class DatasetManagementService(BaseDatasetManagementService):
                 pdict.add_context(context)
         return pdict
 
+    def read_qc_table(self, obj_id):
+        obj = self.container.object_store.read(obj_id)
+        if '_type' in obj and obj['_type'] == 'QC':
+            return obj
+        else:
+            raise BadRequest('obj_id %s not QC' % obj_id)
     def _create_single_resource(self,dataset_id, param_dict):
         '''
         EOI

@@ -92,7 +92,7 @@ from coverage_model import NumexprFunction, PythonFunction, QuantityType, Parame
 
 from interface import objects
 from interface.objects import StreamAlertType, PortTypeEnum, StreamConfigurationType, ParameterFunction as ParameterFunctionResource
-from interface.objects import DataProcessDefinition, DataProcessTypeEnum
+from interface.objects import DataProcessDefinition, DataProcessTypeEnum, StreamConfiguration
 
 from ooi.timer import Accumulator, Timer
 stats = Accumulator(persist=True)
@@ -113,8 +113,9 @@ CANDIDATE_UI_ASSETS = 'http://userexperience.oceanobservatories.org/database-exp
 MASTER_DOC = "https://docs.google.com/spreadsheet/pub?key=0AttCeOvLP6XMdG82NHZfSEJJOGdQTkgzb05aRjkzMEE&output=xls"
 
 ### the URL below should point to a COPY of the master google spreadsheet that works with this version of the loader
-#TESTED_DOC = "https://docs.google.com/spreadsheet/pub?key=0AgjFgozf2vG6dDZoajE3d1Z3WkE0T0tyOW9oYmZqenc&output=xls"
-TESTED_DOC =  "https://docs.google.com/spreadsheet/pub?key=0ArFEMmslwP1ddHY3Zmlza0h5LXZINmpXRXNvRXBkdEE&output=xls"
+#Apr15 TESTED_DOC =  "https://docs.google.com/spreadsheet/pub?key=0ArFEMmslwP1ddHY3Zmlza0h5LXZINmpXRXNvRXBkdEE&output=xls"
+#Apr21 TESTED_DOC =  "https://docs.google.com/spreadsheet/pub?key=0AgjFgozf2vG6dHRFS0x4eWdRM21vMHdEMWZTeFFNTVE&output=xls"
+TESTED_DOC =  "https://docs.google.com/spreadsheet/pub?key=0AgjFgozf2vG6dGZ6TXdQZ2VTT0phdXMyU0JydmE2cHc&output=xls"
 
 ### while working on changes to the google doc, use this to run test_loader.py against the master spreadsheet
 #TESTED_DOC=MASTER_DOC
@@ -3064,6 +3065,22 @@ Reason: %s
 
         contacts = self._get_contacts(row, field='contact_ids', type='DataProduct')
         res_obj = self._create_object_from_row("DataProduct", row, "dp/", contacts=contacts, contact_field='contacts')
+        sc = None
+
+        if 'default_stream_configuration' in row and row['default_stream_configuration']:
+            sc = row['default_stream_configuration']
+            if isinstance(sc, basestring): # The stream config is a key like SC7
+                try:
+                    sc = self.stream_config[row['default_stream_configuration']]
+                except KeyError:
+                    pass
+            elif isinstance(sc, StreamConfiguration): # Passed in from OOI loader
+                pass # Already set sc
+            else:
+                sc = None
+                log.warning("Unkonwn type for stream configuration in data product row")
+                
+
 
         constraint_id = row['geo_constraint_id']
         if constraint_id:
@@ -3099,6 +3116,7 @@ Reason: %s
                 res_id = dpms_client.create_data_product(data_product=res_obj,
                                                          stream_definition_id=stream_definition_id,
                                                          parent_data_product_id=parent_id,
+                                                         default_stream_configuration=sc,
                                                          headers=headers)
             else:
                 res_id = dpms_client.create_data_product_(data_product=res_obj,
@@ -3275,6 +3293,7 @@ Reason: %s
                     newrow['geo_constraint_id'] = const_id1
                     newrow['coordinate_system_id'] = 'OOI_SUBMERGED_CS'
                     newrow['parent'] = ''
+                    newrow['default_stream_configuration'] = scfg
                     if self._is_deployed(node_obj) and self.ooiactivate:
                         newrow['persist_data'] = 'True'
                     else:
@@ -3362,6 +3381,7 @@ Reason: %s
                         newrow['persist_data'] = 'False'
                     newrow['parent'] = ''
                     newrow['lcstate'] = "DEPLOYED_AVAILABLE"
+                    newrow['default_stream_configuration'] = scfg
 
                     pdict_id = pdict_by_name[scfg.parameter_dictionary_name]
                     strdef_id = self._create_dp_stream_def(inst_id, pdict_id, scfg.stream_name)
@@ -3569,16 +3589,24 @@ Reason: %s
 
     def _get_port_assignments(self, raw_port_assigment):
         assignments = {}
+        parent_id = ''
         if raw_port_assigment:
             port_assigments = parse_dict(raw_port_assigment)
 
             for dev_id, port_asgn_info in port_assigments.iteritems():
+                parent_id = port_asgn_info.get("parent_id", "")
+                if parent_id and parent_id in self.resource_ids:
+                    parent_id = self.resource_ids[parent_id]
+                    log.debug('_get_port_assignments converted parent id: %s', parent_id)
                 platform_port = IonObject(OT.PlatformPort,
                                          reference_designator=port_asgn_info.get("reference_designator", ""),
                                          port_type=port_asgn_info.get("port_type", PortTypeEnum.NONE),
-                                         ip_address=str(port_asgn_info.get("ip_address", "") ))
+                                         ip_address=str(port_asgn_info.get("ip_address", "") ),
+                                         parent_id=parent_id )
+
                 device_resrc_id = self.resource_ids[dev_id]
                 assignments[device_resrc_id] = platform_port
+
         return assignments
 
     def _load_Deployment(self, row):
@@ -3586,6 +3614,8 @@ Reason: %s
         coordinate_name = row['coordinate_system']
         context_type = row['context_type']
         context = IonObject(context_type)
+
+        #build port assigments
         assignments = self._get_port_assignments(row.get('port_assignment', None))
 
         deployment_id = self._basic_resource_create(row, "Deployment", "d/",

@@ -504,9 +504,9 @@ class TestAssembly(GenericIntHelperTestCase):
         deployment_id = self.perform_fcruf_script(RT.Deployment, "deployment", c.OMS, actual_obj=deployment_obj,
                                                   extra_fn=add_to_org_fn)
 
-        c.OMS.deploy_platform_site(platform_site_id, deployment_id)
+        c.OMS.assign_site_to_deployment(platform_site_id, deployment_id)
         self.RR2.find_deployment_id_of_platform_site_using_has_deployment(platform_site_id)
-        c.IMS.deploy_platform_device(platform_device_id, deployment_id)
+        c.OMS.assign_device_to_deployment(platform_device_id, deployment_id)
         self.RR2.find_deployment_of_platform_device_using_has_deployment(platform_device_id)
 
 
@@ -556,9 +556,9 @@ class TestAssembly(GenericIntHelperTestCase):
         deployment_id2 = self.perform_fcruf_script(RT.Deployment, "deployment", c.OMS, actual_obj=deployment_obj,
                                                    extra_fn=add_to_org_fn)
         log.debug("Associating instrument site with new deployment")
-        c.OMS.deploy_instrument_site(instrument_site_id, deployment_id2)
+        c.OMS.assign_site_to_deployment(instrument_site_id, deployment_id2)
         log.debug("Associating instrument device with new deployment")
-        c.IMS.deploy_instrument_device(instrument_device_id2, deployment_id2)
+        c.OMS.assign_device_to_deployment(instrument_device_id2, deployment_id2)
 
         # activate the new deployment -- changing the primary device -- but don't switch subscription
         log.debug("Activating new deployment")
@@ -631,13 +631,9 @@ class TestAssembly(GenericIntHelperTestCase):
     def create_data_product_obj(self):
 
         # Construct temporal and spatial Coordinate Reference System objects
-        tdom, sdom = time_series_domain()
-
-        sdom = sdom.dump()
-        tdom = tdom.dump()
 
         # creates an IonObject of RT.DataProduct and adds custom fields specified by dict
-        return any_old(RT.DataProduct, dict(temporal_domain=tdom, spatial_domain=sdom))
+        return any_old(RT.DataProduct)
 
 
     def create_inst_agent_instance(self, agent_id, device_id):
@@ -733,8 +729,8 @@ class TestAssembly(GenericIntHelperTestCase):
         deployment_obj = any_old(RT.Deployment, dict(context=context))
         deployment_id = c.OMS.create_deployment(deployment_obj)
 
-        c.OMS.deploy_instrument_site(instrument_site_id, deployment_id)
-        c.IMS.deploy_instrument_device(instrument_device_id, deployment_id)
+        c.OMS.assign_site_to_deployment(instrument_site_id, deployment_id)
+        c.OMS.assign_device_to_deployment(instrument_device_id, deployment_id)
 
         c.OMS.activate_deployment(deployment_id, True)
 

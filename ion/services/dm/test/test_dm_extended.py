@@ -33,6 +33,8 @@ from shutil import rmtree
 from datetime import datetime, timedelta
 from pyon.net.endpoint import RPCClient
 from pyon.util.log import log
+from pyon.ion.event import EventPublisher
+from interface.objects import InstrumentSite, InstrumentModel, PortTypeEnum, Deployment, CabledInstrumentDeploymentContext
 import lxml.etree as etree
 import simplejson as json
 import pkg_resources
@@ -44,6 +46,8 @@ import time
 import gevent
 from gevent.event import Event
 import calendar
+from ion.services.coi.service_gateway_service import service_gateway_app
+from webtest import TestApp
 
 class TestDMExtended(DMTestCase):
     '''
@@ -382,15 +386,9 @@ class TestDMExtended(DMTestCase):
 
         s.stop()
 
-    @attr('INT')
+    @attr('SMOKE')
     def test_realtime_visualization(self):
-        self.preload_beta()
-
-        # Create the input data product
-        pdict_id = self.dataset_management.read_parameter_dictionary_by_name('ctd_simulator', id_only=True)
-        stream_def_id = self.create_stream_definition('ctd sim L2', parameter_dictionary_id=pdict_id)
-        data_product_id = self.create_data_product('ctd simulator', stream_def_id=stream_def_id)
-        self.activate_data_product(data_product_id)
+        data_product_id = self.make_ctd_data_product()
 
         # Launch the realtime visualization process
         viz_token = self.visualization.initiate_realtime_visualization_data(data_product_id=data_product_id)
@@ -992,6 +990,12 @@ class TestDMExtended(DMTestCase):
 
         bounds = self.dataset_management.dataset_temporal_bounds(dataset_id)
         self.assertEquals(bounds, {})
+
+        parameters = self.data_product_management.get_data_product_parameters(data_product_id, id_only=False)
+        parameter_names = [p.name for p in parameters]
+        self.assertIn('time', parameter_names)
+        self.assertIn('temp', parameter_names)
+        self.assertIn('conductivity', parameter_names)
 
     @attr("UTIL")
     def test_overlapping_repeating(self):
@@ -1596,12 +1600,32 @@ def rotate_v(u,v,theta):
         site_2_id, _ = self.resource_registry.create(site_2)
 
 
+    def local_range_upload(self):
+        content = {'TEMPWAT': {'local_range': [{'author': 'Bodhi',
+            'table': {'datlim1': [0, 1, 2, 3, 4],
+             'datlim2': [30, 31, 32, 33, 34],
+             'month': [0, 2, 6, 8, 10]},
+            'ts_created': 1399319183.604609,
+            'units': 'deg_C'}]},
+         'PRACSAL': {'local_range': [{'author': 'Johnny Utah',
+            'table': {'datlim1': [0.0, 10.0, 10.0, 20.0],
+             'datlim2': [30.0, 40.0, 40.0, 50.0],
+             'lat': [46.436926, 46.436926, 46.436926, 46.436926],
+             'lon': [-124.832179, -124.832179, -125.35965425, -125.35965425],
+             'pressure': [0.0, 37.5, 0.0, 37.5]},
+            'ts_created': 1399319183.604609,
+            'units': '1'}]},
+         '_type': 'QC'}
+
+        self.container.object_store.create_doc(content, "CP01CNSM-MFD37-03-CTDBPD000")
+
 
         
     @attr("UTIL")
     def test_qc_stuff(self):
-        from interface.objects import *
         data_product_id = self.make_ctd_data_product()
+
+        testapp = TestApp(service_gateway_app)
         self.add_tempwat_qc(data_product_id)
         data_product = self.resource_registry.read(data_product_id)
         data_product.qc_glblrng = 'applicable'
@@ -1629,88 +1653,37 @@ def rotate_v(u,v,theta):
         self.data_acquisition_management.assign_data_product(device_id, data_product_id)
         tempwat_id = self.make_tempwat(data_product_id)
 
+        # Post the lookup tables
+        self.local_range_upload()
+        upload_files = [('file', 'test_data/sample_qc_upload.csv')]
+        result = testapp.post('/ion-service/upload/qc', upload_files=upload_files, status=200)
+        
+
         # Now lets make a derived data product for tempwat
 
         self.container.spawn_process('qc', 'ion.processes.data.transforms.qc_post_processing', 'QCProcessor', {})
 
-
-        doc = { "CP01CNSM-MFD37-03-CTDBPD000":{
-                  "TEMPWAT":{
-                     "stuck_value":[
-                        {
-                           "units":"C",
-                           "consecutive_values":10,
-                           "ts_created":1396371094.658699,
-                           "resolution":0.005,
-                           "author":"BM"
-                        }
-                     ],
-                     "global_range":[
-                        {
-                           "author":"BM",
-                           "max_value":11.0,
-                           "min_value":10.5,
-                           "units":"m/s",
-                           "ts_created":1396372094.658695
-                        },
-                        {
-                           "author":"BM",
-                           "max_value":1,
-                           "min_value":-1,
-                           "units":"m/s",
-                           "ts_created":1396371094.658695
-                        }
-                     ],
-                     "trend_test":[
-                        {
-                           "sample_length":25,
-                           "author":"BM",
-                           "units":"K",
-                           "standard_deviation":4.5,
-                           "ts_created":1396371094.658704,
-                           "polynomial_order":4
-                        }
-                     ],
-                     "spike_test":[
-                        {
-                           "window_length":15,
-                           "author":"BM",
-                           "units":"degrees",
-                           "range_multiplier":4,
-                           "ts_created":1396371094.658708,
-                           "accuracy":0.0001
-                        }
-                     ],
-                     "gradient_test" : [
-                        {
-                           "toldat": 0.1,
-                           "xunits" : "s",
-                           "mindx" : 10,
-                           "author" : "Boon",
-                           "startdat" : "",
-                           "ddatdx" : [-50.0, 50.0],
-                           "units" : "deg_C",
-                           "ts_created" : 1396371094.658695
-                        }
-                     ]                  
-                 },
-                  "PRESWAT":{
-                     "stuck_value":[
-                        {
-                           "units":"C",
-                           "consecutive_values":10,
-                           "ts_created":1396371094.658699,
-                           "resolution":0.005,
-                           "author":"BM"
-                        }
-                     ],
-                     "global_range":[],
-                     "trend_test":[],
-                     "spike_test":[]
-                  }
-               }
-            }
-        self.container.object_store.create_doc(doc, 'CP01CNSM-MFD37-03-CTDBPD000')
+        #self.container.object_store.create_doc(doc, 'CP01CNSM-MFD37-03-CTDBPD000')
         streamer = Streamer(data_product_id)
         self.addCleanup(streamer.stop)
+
+
+        event_publisher = EventPublisher(OT.ResetQCEvent)
+        self.addCleanup(event_publisher.close)
+        event = Event()
+
+        def annoying_thread(event_publisher, event):
+            log.error("Started annoying thread")
+            while not event.wait(1):
+                log.error("annoying thread")
+                event_publisher.publish_event(origin='refdes')
+                
+
+        g = gevent.spawn(annoying_thread, event_publisher, event)
+
+
         breakpoint(locals(), globals())
+        event.set()
+        g.join()
+
+

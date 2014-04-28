@@ -25,6 +25,11 @@ from pyon.core.exception import NotFound, Inconsistent
 from pyon.core.governance import ORG_MANAGER_ROLE, GovernanceHeaderValues, has_org_role, get_valid_resource_commitments, ION_MANAGER
 from ion.services.sa.observatory.observatory_management_service import INSTRUMENT_OPERATOR_ROLE, OBSERVATORY_OPERATOR_ROLE
 
+from ion.agents.platform.platform_agent_enums import PlatformAgentState
+from ion.agents.platform.platform_agent_enums import PlatformAgentEvent
+from ion.agents.platform.platform_agent_enums import PlatformAgentCapability
+from ion.agents.platform.platform_agent_enums import ResourceInterfaceCapability
+
 from ion.agents.platform.exceptions import PlatformDriverException
 from ion.agents.platform.exceptions import PlatformException
 from ion.agents.platform.platform_driver_event import AttributeValueDriverEvent
@@ -40,8 +45,8 @@ from ion.core.includes.mi import DriverEvent
 
 from pyon.util.containers import DotDict
 
-from pyon.agent.common import BaseEnum
 from pyon.agent.instrument_fsm import FSMStateError
+from pyon.agent.instrument_fsm import FSMError
 
 from ion.agents.platform.launcher import Launcher
 
@@ -49,6 +54,8 @@ from ion.agents.platform.platform_resource_monitor import PlatformResourceMonito
 
 from ion.agents.platform.status_manager import StatusManager
 from ion.agents.platform.platform_agent_stream_publisher import PlatformAgentStreamPublisher
+
+from ion.agents.platform.mission_manager import MissionManager
 
 from ion.agents.instrument.instrument_agent import InstrumentAgentState
 from ion.agents.instrument.instrument_agent import InstrumentAgentEvent
@@ -68,90 +75,6 @@ import pprint
 
 PA_MOD = 'ion.agents.platform.platform_agent'
 PA_CLS = 'PlatformAgent'
-
-
-class PlatformAgentState(BaseEnum):
-    """
-    Platform agent state enum.
-    """
-    UNINITIALIZED     = ResourceAgentState.UNINITIALIZED
-    INACTIVE          = ResourceAgentState.INACTIVE
-    IDLE              = ResourceAgentState.IDLE
-    STOPPED           = ResourceAgentState.STOPPED
-    COMMAND           = ResourceAgentState.COMMAND
-    MONITORING        = 'PLATFORM_AGENT_STATE_AUTOSAMPLE'
-    LAUNCHING         = 'PLATFORM_AGENT_STATE_LAUNCHING'
-    LOST_CONNECTION   = ResourceAgentState.LOST_CONNECTION
-    MISSION_STREAMING = 'PLATFORM_AGENT_STATE_MISSION_STREAMING'
-    MISSION_COMMAND   = 'PLATFORM_AGENT_STATE_MISSION_COMMAND'
-
-class PlatformAgentEvent(BaseEnum):
-    ENTER                     = ResourceAgentEvent.ENTER
-    EXIT                      = ResourceAgentEvent.EXIT
-
-    INITIALIZE                = ResourceAgentEvent.INITIALIZE
-    RESET                     = ResourceAgentEvent.RESET
-    GO_ACTIVE                 = ResourceAgentEvent.GO_ACTIVE
-    GO_INACTIVE               = ResourceAgentEvent.GO_INACTIVE
-    RUN                       = ResourceAgentEvent.RUN
-    SHUTDOWN                  = 'PLATFORM_AGENT_SHUTDOWN_CHILDREN'
-
-    CLEAR                     = ResourceAgentEvent.CLEAR
-    PAUSE                     = ResourceAgentEvent.PAUSE
-    RESUME                    = ResourceAgentEvent.RESUME
-
-    GET_RESOURCE_CAPABILITIES = ResourceAgentEvent.GET_RESOURCE_CAPABILITIES
-    PING_RESOURCE             = ResourceAgentEvent.PING_RESOURCE
-    GET_RESOURCE              = ResourceAgentEvent.GET_RESOURCE
-    SET_RESOURCE              = ResourceAgentEvent.SET_RESOURCE
-    EXECUTE_RESOURCE          = ResourceAgentEvent.EXECUTE_RESOURCE
-    GET_RESOURCE_STATE        = ResourceAgentEvent.GET_RESOURCE_STATE
-
-    START_MONITORING          = 'PLATFORM_AGENT_START_AUTOSAMPLE'
-    STOP_MONITORING           = 'PLATFORM_AGENT_STOP_AUTOSAMPLE'
-    LAUNCH_COMPLETE           = 'PLATFORM_AGENT_LAUNCH_COMPLETE'
-
-    LOST_CONNECTION           = ResourceAgentEvent.LOST_CONNECTION
-    AUTORECONNECT             = ResourceAgentEvent.AUTORECONNECT
-
-    RUN_MISSION               = 'PLATFORM_AGENT_RUN_MISSION'
-    ABORT_MISSION             = 'PLATFORM_AGENT_ABORT_MISSION'
-    KILL_MISSION              = 'PLATFORM_AGENT_KILL_MISSION'
-
-class PlatformAgentCapability(BaseEnum):
-    INITIALIZE                = PlatformAgentEvent.INITIALIZE
-    RESET                     = PlatformAgentEvent.RESET
-    GO_ACTIVE                 = PlatformAgentEvent.GO_ACTIVE
-    GO_INACTIVE               = PlatformAgentEvent.GO_INACTIVE
-    RUN                       = PlatformAgentEvent.RUN
-    SHUTDOWN                  = PlatformAgentEvent.SHUTDOWN
-
-    CLEAR                     = PlatformAgentEvent.CLEAR
-    PAUSE                     = PlatformAgentEvent.PAUSE
-    RESUME                    = PlatformAgentEvent.RESUME
-
-    # These are not agent capabilities but interface capabilities.
-    #GET_RESOURCE_CAPABILITIES = PlatformAgentEvent.GET_RESOURCE_CAPABILITIES
-    #PING_RESOURCE             = PlatformAgentEvent.PING_RESOURCE
-    #GET_RESOURCE              = PlatformAgentEvent.GET_RESOURCE
-    #SET_RESOURCE              = PlatformAgentEvent.SET_RESOURCE
-    #EXECUTE_RESOURCE          = PlatformAgentEvent.EXECUTE_RESOURCE
-    #GET_RESOURCE_STATE        = PlatformAgentEvent.GET_RESOURCE_STATE
-
-    START_MONITORING          = PlatformAgentEvent.START_MONITORING
-    STOP_MONITORING           = PlatformAgentEvent.STOP_MONITORING
-
-    RUN_MISSION               = PlatformAgentEvent.RUN_MISSION
-    ABORT_MISSION             = PlatformAgentEvent.ABORT_MISSION
-    KILL_MISSION              = PlatformAgentEvent.KILL_MISSION
-
-class ResourceInterfaceCapability(BaseEnum):
-    #GET_RESOURCE_CAPABILITIES = PlatformAgentEvent.GET_RESOURCE_CAPABILITIES
-    PING_RESOURCE             = PlatformAgentEvent.PING_RESOURCE
-    GET_RESOURCE              = PlatformAgentEvent.GET_RESOURCE
-    SET_RESOURCE              = PlatformAgentEvent.SET_RESOURCE
-    EXECUTE_RESOURCE          = PlatformAgentEvent.EXECUTE_RESOURCE
-    GET_RESOURCE_STATE        = PlatformAgentEvent.GET_RESOURCE_STATE
 
 
 class PlatformAgentAlertManager(AgentAlertManager):
@@ -264,12 +187,17 @@ class PlatformAgent(ResourceAgent):
         # event subscribers, and helps with related publications.
         self._status_manager = None
 
-        # The current loaded mission file.
-        self.aparm_mission = None
+        #####################################
+        # mission execution handling:
 
-        # The get/set helpers set by the mission loader.
-        self.aparm_get_mission = None
-        self.aparm_set_mission = None
+        # MissionManager created on_start:
+        self._mission_manager = None
+
+        # state to return to after mission termination
+        self._pre_mission_state = None
+
+        # to sync with mission execution
+        self._mission_greenlet = None
 
         #####################################
         # lost_connection handling:
@@ -364,6 +292,8 @@ class PlatformAgent(ResourceAgent):
 
         # create StatusManager now that we have all needed elements:
         self._status_manager = StatusManager(self)
+
+        self._mission_manager = MissionManager(self)
 
         if self._configure_aparams_arg:
             # see explanation in _configure_aparams
@@ -2159,25 +2089,33 @@ class PlatformAgent(ResourceAgent):
 
         return children_with_errors
 
-    def _instruments_execute_agent(self, command=None, create_command=None,
-                                   expected_state=None):
+    def _instruments_execute_agent(self, command, expected_state):
         """
         Supporting routine for various commands sent to instruments.
 
+        If expected_state is not None, the command will actually NOT be issued
+        against a child agent if that child is already in this state,
+        or if its current state is already at a "level of activation" in the
+        "direction" of the command. The level of activation for this purpose
+        is given by the following ordering of relevant states:
+
+         UNINITIALIZED < INACTIVE < IDLE < COMMAND < STREAMING
+
+        Example: If command = CLEAR (which "decreases" level of activation)
+        and expected_state = IDLE, then the command is *not* issued if child's
+        current state is UNINITIALIZED, INACTIVE, or IDLE.
+
         Note that invalidated children are ignored.
 
-        @param create_command invoked as create_command(instrument_id) for each
-                              instrument to create the command to be executed.
-
-        @param expected_state  If given, it is checked that the child gets to
-                               this state.
+        @param command
+                    Command to be issued
+        @param expected_state
+                    Desired state to determine if current state is acceptable
+                    (in which case the command is not actually issued).
 
         @return dict with children having caused some error. Empty if all
                 children were processed OK.
         """
-
-        # OOIION-1290: only rely on self._ia_clients, which is the more dynamic
-        # variable reflecting the current situation with child instruments.
 
         # act only on the children that are not invalidated:
         valid_clients = dict((k, v) for k, v in self._ia_clients.iteritems()
@@ -2193,9 +2131,83 @@ class PlatformAgent(ResourceAgent):
         if not len(valid_clients):
             log.warn("%r: OOIION-1077 all instrument children (%s) are "
                      "invalidated or could not be re-validated. Not executing"
-                     " command. command=%r, create_command=%r",
-                     self._platform_id, instrument_ids, command, create_command)
+                     " command. command=%r",
+                     self._platform_id, instrument_ids, command)
             return children_with_errors   # that is, none.
+
+        def acceptable_state(current_state, expected_state, command):
+            """
+            Returns true only if the instrument's current state is acceptable
+            for the desired expected state.
+            """
+            def activation_level(state):
+                """
+                Returns number for ordering purposes; None if state is not
+                associated with any activation level.
+                """
+                order = [
+                    ResourceAgentState.UNINITIALIZED,
+                    ResourceAgentState.INACTIVE,
+                    ResourceAgentState.IDLE,
+                    ResourceAgentState.COMMAND,
+                    ResourceAgentState.STREAMING,
+                ]
+                return order.index(state) if state in order else None
+
+            def compare_states(state1, state2):
+                """
+                Returns numeric result of comparison; None if the states are
+                not comparable.
+                """
+                al1 = activation_level(state1)
+                al2 = activation_level(state2)
+                if al1 is None or al2 is None:
+                    return None
+                else:
+                    return int(al1) - int(al2)
+
+            def activation_level_direction(command):
+                """
+                Returns 'incr' or 'decr' if command increases or
+                decreases activation level; otherwise None.
+                """
+                incr_commands = [
+                    ResourceAgentEvent.GO_ACTIVE,
+                    ResourceAgentEvent.RUN,
+                    DriverEvent.START_AUTOSAMPLE,
+                ]
+                decr_commands = [
+                    ResourceAgentEvent.RESET,
+                    ResourceAgentEvent.GO_INACTIVE,
+                    DriverEvent.STOP_AUTOSAMPLE,
+                    ResourceAgentEvent.CLEAR,
+                ]
+                if command in incr_commands:
+                    return 'incr'
+                elif command in decr_commands:
+                    return 'decr'
+                else:
+                    return None
+
+            acceptable = False
+
+            if current_state == expected_state:
+                log.trace("%r: instrument %r already in state: %r",
+                          self._platform_id, instrument_id, expected_state)
+                acceptable = True
+            else:
+                comp = compare_states(current_state, expected_state)
+                actl = activation_level_direction(command)
+                if comp is not None:
+                    acceptable = (comp <= 0 and actl == 'decr') or \
+                                 (comp > 0  and actl == 'incr')
+
+                log.debug("%r: instrument %r: current_state=%r expected_state=%r"
+                          " command=%r, comp=%s, actl=%s, acceptable_state=%s",
+                          self._platform_id, instrument_id,
+                          current_state, expected_state,
+                          command, comp, actl, acceptable)
+            return acceptable
 
         def execute_cmd(instrument_id, cmd):
             ia_client = valid_clients[instrument_id].ia_client
@@ -2232,26 +2244,17 @@ class PlatformAgent(ResourceAgent):
 
             return None
 
-        if command:
-            log.debug("%r: executing command %r on my instruments: %s",
-                      self._platform_id, command, valid_clients.keys())
-        else:
-            log.debug("%r: executing command on my instruments: %s",
-                      self._platform_id, valid_clients.keys())
+        log.debug("%r: executing command %r on my instruments: %s",
+                  self._platform_id, command, valid_clients.keys())
 
         for instrument_id in valid_clients:
             if expected_state:
                 ia_client = valid_clients[instrument_id].ia_client
-                sub_state = ia_client.get_agent_state()
-                if expected_state == sub_state:
-                    #
-                    # already in the desired state; do nothing for this child:
-                    #
-                    log.trace("%r: instrument %r already in state: %r",
-                              self._platform_id, instrument_id, expected_state)
+                current_state = ia_client.get_agent_state()
+                if acceptable_state(current_state, expected_state, command):
                     continue
 
-            cmd = AgentCommand(command=command) if command else create_command(instrument_id)
+            cmd = AgentCommand(command=command)
             err_msg = execute_cmd(instrument_id, cmd)
 
             if err_msg is not None:
@@ -2450,9 +2453,6 @@ class PlatformAgent(ResourceAgent):
                 children were processed OK.
         """
         instruments_with_errors = {}
-
-        # OOIION-1290: only rely on self._ia_clients, which is the more dynamic
-        # variable reflecting the current situation with child instruments.
 
         # Act only on the children that are not invalidated:
         valid_clients = dict((k, v) for k, v in self._ia_clients.iteritems()
@@ -3522,62 +3522,133 @@ class PlatformAgent(ResourceAgent):
         return next_state, result
 
     ##############################################################
-    # COMMAND or STREAMING handers.
+    # mission related handlers
     ##############################################################
 
-    def _handler_run_mission(self):
+    def _run_mission(self, mission_id, mission_yml):
         """
-        Begin a mission execution in COMMAND or STREAMING mode.
-        Transitions to the appropriate mission substate.
-        @param args:
-        @param kwargs:
-        @return:
+        Method launched in a separate greenlet to run a mission, at the end
+        of which, if no remaining missions are executing, EXIT_MISSION is
+        triggered to return to saved state.
         """
-        pass
+        time_start = time.time()
+        log.debug('[mm] _run_mission: running mission_id=%r ...', mission_id)
+        self._mission_manager.run_mission(mission_id, mission_yml)
 
-    ##############################################################
-    # MISSION_COMMAND handers.
-    ##############################################################
+        elapsed_time = time.time() - time_start
+        log.debug('[mm] _run_mission: completed mission_id=%s. elapsed_time=%s',
+                  mission_id, elapsed_time)
 
-    def _handler_mission_command_abort(self, *args, **kwargs):
-        """
-        Abort mission from MISSION_COMMAND.
-        @param args:
-        @param kwargs:
-        @return:
-        """
-        pass
+        remaining = self._mission_manager.get_number_of_running_missions()
+        if remaining == 0:
+            # check state before attempting the EXIT_MISSION.
+            # (but we could still have a "check-then-act" race condition here)
+            curr_state = self.get_agent_state()
+            if curr_state in [PlatformAgentState.MISSION_COMMAND,
+                              PlatformAgentState.MISSION_STREAMING]:
+                log.debug('[mm] _run_mission: triggering EXIT_MISSION')
+                self._fsm.on_event(PlatformAgentEvent.EXIT_MISSION)
+            else:
+                log.warn('[mm] _run_mission: not triggering EXIT_MISSION: FSM not in '
+                         'mission substate (%s)', curr_state)
 
-    def _handler_mission_command_kill(self, *args, **kwargs):
+    def _handler_mission_run(self, *args, **kwargs):
         """
-        Kill mission from MISSION_COMMAND.
-        @param args:
-        @param kwargs:
-        @return:
+        In a separate thread, starts the execution of the mission indicated
+        with the kwargs 'mission_id' and 'mission_yml'.
+        If not already in a mission state, it saves current state to return to
+        upon all mission executions are completed, and transitions to the
+        appropriate mission substate.
         """
-        pass
+        if log.isEnabledFor(logging.TRACE):  # pragma: no cover
+            log.trace("%r/%s args=%s kwargs=%s",
+                      self._platform_id, self.get_agent_state(), str(args), str(kwargs))
 
-    ##############################################################
-    # MISSION_STREAMING handers.
-    ##############################################################
+        mission_id = kwargs.get('mission_id', None)
+        if mission_id is None:
+            raise FSMError('mission_run: missing mission_id argument')
+        mission_yml = kwargs.get('mission_yml', None)
+        if mission_yml is None:
+            raise FSMError('mission_run: missing mission_yml argument')
 
-    def _handler_mission_streaming_abort(self, *args, **kwargs):
-        """
-        Abort mission from MISSION_STREAMING.
-        @param args:
-        @param kwargs:
-        @return:
-        """
-        pass
+        curr_state = self.get_agent_state()
+        if curr_state in [PlatformAgentState.COMMAND, PlatformAgentState.MISSION_STREAMING]:
+            # save state to return to when all mission executions are completed
+            self._pre_mission_state = curr_state
 
-    def _handler_mission_streaming_kill(self, *args, **kwargs):
+            next_state = PlatformAgentState.MISSION_COMMAND if curr_state == \
+                PlatformAgentState.COMMAND else PlatformAgentState.MISSION_STREAMING
+        else:
+            # just stay in the current state:
+            next_state = None
+
+        self._mission_greenlet = spawn(self._run_mission, mission_id, mission_yml)
+        log.info("%r: started mission execution, mission_id=%r", self._platform_id, mission_id)
+
+        result = None
+        return next_state, result
+
+    def _handler_mission_exit(self, *args, **kwargs):
         """
-        Kill mission form MISSION_STREAMING.
-        @param args:
-        @param kwargs:
-        @return:
+        Simply transitions to saved state prior to mission execution.
         """
-        pass
+        if log.isEnabledFor(logging.TRACE):  # pragma: no cover
+            log.trace("%r/%s args=%s kwargs=%s",
+                      self._platform_id, self.get_agent_state(), str(args), str(kwargs))
+
+        next_state = self._pre_mission_state
+        self._pre_mission_state = None
+        result = None
+
+        return next_state, result
+
+    def _handler_mission_abort(self, *args, **kwargs):
+        """
+        Aborts the execution of the mission indicated with the kwarg 'mission_id'.
+        Transitions to saved state if no remaining missions are left running.
+        """
+        if log.isEnabledFor(logging.TRACE):  # pragma: no cover
+            log.trace("%r/%s args=%s kwargs=%s",
+                      self._platform_id, self.get_agent_state(), str(args), str(kwargs))
+
+        mission_id = kwargs.get('mission_id', None)
+        if mission_id is None:
+            raise FSMError('mission_run: missing mission_id argument')
+
+        result = self._mission_manager.abort_mission(mission_id)
+
+        remaining = self._mission_manager.get_number_of_running_missions()
+        if remaining == 0:
+            next_state = self._pre_mission_state
+            self._pre_mission_state = None
+        else:
+            next_state = None
+
+        return next_state, result
+
+    def _handler_mission_kill(self, *args, **kwargs):
+        """
+        Kills the execution of the mission indicated with the kwarg 'mission_id'.
+        Transitions to saved state if no remaining missions are left running.
+        """
+        if log.isEnabledFor(logging.TRACE):  # pragma: no cover
+            log.trace("%r/%s args=%s kwargs=%s",
+                      self._platform_id, self.get_agent_state(), str(args), str(kwargs))
+
+        mission_id = kwargs.get('mission_id', None)
+        if mission_id is None:
+            raise FSMError('mission_run: missing mission_id argument')
+
+        result = self._mission_manager.kill_mission(mission_id)
+
+        remaining = self._mission_manager.get_number_of_running_missions()
+        if remaining == 0:
+            next_state = self._pre_mission_state
+            self._pre_mission_state = None
+        else:
+            next_state = None
+
+        return next_state, result
 
     ##############################################################
     # Agent parameter functions.
@@ -3701,7 +3772,7 @@ class PlatformAgent(ResourceAgent):
             self._fsm.add_handler(state, PlatformAgentEvent.EXECUTE_RESOURCE, self._handler_execute_resource)
             self._fsm.add_handler(state, PlatformAgentEvent.LOST_CONNECTION, self._handler_connection_lost_driver_event)
 
-            self._fsm.add_handler(state, PlatformAgentEvent.RUN_MISSION, self._handler_run_mission)
+            self._fsm.add_handler(state, PlatformAgentEvent.RUN_MISSION, self._handler_mission_run)
 
         # additional COMMAND state event handlers.
         self._fsm.add_handler(PlatformAgentState.COMMAND, PlatformAgentEvent.GO_INACTIVE, self._handler_idle_go_inactive)
@@ -3720,8 +3791,14 @@ class PlatformAgent(ResourceAgent):
         self._fsm.add_handler(PlatformAgentState.LOST_CONNECTION, PlatformAgentEvent.GO_INACTIVE, self._handler_lost_connection_go_inactive)
         self._fsm.add_handler(PlatformAgentState.LOST_CONNECTION, PlatformAgentEvent.GET_RESOURCE_STATE, self._handler_get_resource_state)
 
-        # MISSION state event handlers.
-        self._fsm.add_handler(PlatformAgentState.MISSION_COMMAND, PlatformAgentEvent.ABORT_MISSION, self._handler_mission_command_abort)
-        self._fsm.add_handler(PlatformAgentState.MISSION_COMMAND, PlatformAgentEvent.KILL_MISSION, self._handler_mission_command_kill)
-        self._fsm.add_handler(PlatformAgentState.MISSION_STREAMING, PlatformAgentEvent.ABORT_MISSION, self._handler_mission_streaming_abort)
-        self._fsm.add_handler(PlatformAgentState.MISSION_STREAMING, PlatformAgentEvent.KILL_MISSION, self._handler_mission_streaming_kill)
+        # MISSION_COMMAND state event handlers.
+        self._fsm.add_handler(PlatformAgentState.MISSION_COMMAND, PlatformAgentEvent.RUN_MISSION, self._handler_mission_run)
+        self._fsm.add_handler(PlatformAgentState.MISSION_COMMAND, PlatformAgentEvent.EXIT_MISSION, self._handler_mission_exit)
+        self._fsm.add_handler(PlatformAgentState.MISSION_COMMAND, PlatformAgentEvent.ABORT_MISSION, self._handler_mission_abort)
+        self._fsm.add_handler(PlatformAgentState.MISSION_COMMAND, PlatformAgentEvent.KILL_MISSION, self._handler_mission_kill)
+
+        # MISSION_STREAMING state event handlers.
+        self._fsm.add_handler(PlatformAgentState.MISSION_STREAMING, PlatformAgentEvent.RUN_MISSION, self._handler_mission_run)
+        self._fsm.add_handler(PlatformAgentState.MISSION_STREAMING, PlatformAgentEvent.EXIT_MISSION, self._handler_mission_exit)
+        self._fsm.add_handler(PlatformAgentState.MISSION_STREAMING, PlatformAgentEvent.ABORT_MISSION, self._handler_mission_abort)
+        self._fsm.add_handler(PlatformAgentState.MISSION_STREAMING, PlatformAgentEvent.KILL_MISSION, self._handler_mission_kill)

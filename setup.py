@@ -12,7 +12,7 @@ import sys
 if sys.platform == 'darwin':
     os.environ['C_INCLUDE_PATH'] = '/usr/local/include'
 
-version = '3.0.1-dev'
+version = '3.0.2-dev'
 
 setup(  name = 'coi-services',
         version = version,
@@ -40,8 +40,7 @@ setup(  name = 'coi-services',
             'pygsw==0.0.10',
             'matplotlib==1.1.1',
             'Pydap==3.3.RC1',
-            'netCDF4>=1.0',
-            'elasticpy==0.12',
+            'netCDF4==1.0.9',
             'pyparsing==1.5.6', 
             'ntplib',
             'xlrd==0.8.0',
@@ -49,6 +48,7 @@ setup(  name = 'coi-services',
             'apscheduler==2.1.0',
             'pyproj==1.9.3',
             'udunitspy==0.0.6',
+            'beautifulsoup4==4.2.1'
         ],
         entry_points = """
             [pydap.handler]

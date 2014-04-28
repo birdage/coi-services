@@ -4,7 +4,6 @@ from gevent.event import AsyncResult
 import unittest, os
 from nose.plugins.attrib import attr
 import gevent
-import elasticpy as ep
 from mock import patch
 
 import time
@@ -286,9 +285,6 @@ class TestActivateInstrumentIntegration(IonIntegrationTestCase):
                                                                                instDevice_id)
 
 
-        tdom, sdom = time_series_domain()
-        sdom = sdom.dump()
-        tdom = tdom.dump()
 
 
         parsed_pdict_id = self.dataset_management.read_parameter_dictionary_by_name('ctd_parsed_param_dict', id_only=True)
@@ -304,9 +300,7 @@ class TestActivateInstrumentIntegration(IonIntegrationTestCase):
 
         dp_obj = IonObject(RT.DataProduct,
             name='the parsed data',
-            description='ctd stream test',
-            temporal_domain = tdom,
-            spatial_domain = sdom)
+            description='ctd stream test')
 
         data_product_id1 = self.dpclient.create_data_product(data_product=dp_obj, stream_definition_id=parsed_stream_def_id, default_stream_configuration=parsed_config)
         log.debug( 'new dp_id = %s' , data_product_id1)
@@ -332,9 +326,7 @@ class TestActivateInstrumentIntegration(IonIntegrationTestCase):
 
         dp_obj = IonObject(RT.DataProduct,
             name='the raw data',
-            description='raw stream test',
-            temporal_domain = tdom,
-            spatial_domain = sdom)
+            description='raw stream test')
 
         data_product_id2 = self.dpclient.create_data_product(data_product=dp_obj, stream_definition_id=raw_stream_def_id, default_stream_configuration=raw_config)
         log.debug('new dp_id = %s', data_product_id2)

@@ -28,7 +28,7 @@ DEFAULT_WEB_SERVER_PORT = 8080
 containerui_instance = None
 
 standard_types = ['str', 'int', 'bool', 'float', 'list', 'dict']
-standard_resattrs = ['name', 'description', 'lcstate', 'availability', 'visibility', 'ts_created', 'ts_updated']
+standard_resattrs = ['name', 'description', 'lcstate', 'availability', 'visibility', 'ts_created', 'ts_updated', 'alt_ids']
 EDIT_IGNORE_FIELDS = ['rid', 'restype', 'lcstate', 'availability', 'visibility', 'ts_created', 'ts_updated']
 EDIT_IGNORE_TYPES = ['list', 'dict', 'bool']
 standard_eventattrs = ['origin', 'ts_created', 'description']
@@ -97,7 +97,7 @@ def process_index():
             "<li>Platforms: <a href='/list/PlatformDevice'>PlatformDevice</a>, <a href='/list/PlatformSite'>PlatformSite</a>, <a href='/list/PlatformModel'>PlatformModel</a>, <a href='/list/PlatformAgent'>PlatformAgent</a>, <a href='/list/PlatformAgentInstance'>PlatformAgentInstance</a></li>",
             "<li>Instruments: <a href='/list/InstrumentDevice'>InstrumentDevice</a>, <a href='/list/InstrumentSite'>InstrumentSite</a>, <a href='/list/InstrumentModel'>InstrumentModel</a>, <a href='/list/InstrumentAgent'>InstrumentAgent</a>, <a href='/list/InstrumentAgentInstance'>InstrumentAgentInstance</a></li>",
             "<li>External Data: <a href='/list/ExternalDataset'>ExternalDataset</a>, <a href='/list/ExternalDataProvider'>ExternalDataProvider</a>, <a href='/list/ExternalDatasetModel'>ExternalDatasetModel</a>, <a href='/list/ExternalDatasetAgent'>ExternalDatasetAgent</a>, <a href='/list/ExternalDatasetAgentInstance'>ExternalDatasetAgentInstance</a></li>",
-            "<li>Data: <a href='/list/DataProduct'>DataProduct</a>, <a href='/list/Dataset'>Dataset</a>, <a href='/list/Stream'>Stream</a></li>",
+            "<li>Data: <a href='/list/DataProduct'>DataProduct</a>, <a href='/list/Dataset'>Dataset</a></li>",
             "<li>Coverage: <a href='/list/ParameterContext'>ParameterContext</a>, <a href='/list/ParameterDictionary'>ParameterDictionary</a>, <a href='/list/ParameterFunction'>ParameterFunction</a>, <a href='/list/StreamDefinition'>StreamDefinition</a></li>",
             "<li>Streaming: <a href='/list/DataProcessDefinition'>DataProcessDefinition</a>, <a href='/list/DataProcess'>DataProcess</a>, <a href='/list/DataProducer'>DataProducer</a>, <a href='/list/Stream'>Stream</a>, <a href='/list/Subscription'>Subscription</a></li>",
             "<li>Execution: <a href='/list/ProcessDefinition'>ProcessDefinition</a>, <a href='/list/Process'>Process</a>, <a href='/list/Service'>Service</a>, <a href='/list/ServiceDefinition'>ServiceDefinition</a>, <a href='/list/CapabilityContainer'>CapabilityContainer</a></li>",
@@ -106,14 +106,15 @@ def process_index():
             "</ul></li>",
             "<li><a href='/events'><b>Browse Events</b></a></li>",
             "<li><a href='/viewobj'><b>View Objects</b></a></li>",
+            "<li><a href='/viewstate'><b>View Process State</b></a></li>",
             "<li><a href='/dir'><b>Browse ION Directory</b></a></li>",
-            "<li><a href='/mscweb'><b>Show system messages (MSCWeb)</b></a>",
-            "<ul>",
-            "<li><a href='/mscaction/stop'>Stop system message recording</a></li>",
-            "</ul></li>",
+            #"<li><a href='/mscweb'><b>Show system messages (MSCWeb)</b></a>",
+            #"<ul>",
+            #"<li><a href='/mscaction/stop'>Stop system message recording</a></li>",
+            #"</ul></li>",
             "<li><a href='http://localhost:3000'><b>ION Web UI (if running)</b></a></li>",
-            "<li><a href='http://localhost:5984/_utils'><b>CouchDB Futon UI (if running)</b></a></li>",
-            "<li><a href='http://localhost:55672/'><b>RabbitMQ Management UI (if running)</b></a></li>",
+            "<li><a href='http://" + CFG.get_safe("server.amqp.host") + ":55672/'><b>RabbitMQ Management UI V2.x (if running)</b></a></li>",
+            "<li><a href='http://localhost:15672/'><b>RabbitMQ Management UI V3.x (if running)</b></a></li>",
             "<li><a href='http://localhost:9001/'><b>Supervisord UI (if running)</b></a></li>",
             "</ul></p>",
             "<h2>System and Container Properties</h2>",
@@ -203,11 +204,15 @@ def process_alt_ids(namespace, alt_id):
 def process_list_resources(resource_type):
     try:
         restype = str(resource_type)
+        with_details = get_arg("details", "off") == "on"
+
         res_list,_ = Container.instance.resource_registry.find_resources(restype=restype)
 
         fragments = [
             build_standard_menu(),
             "<h1>List of '%s' Resources</h1>" % restype,
+            build_command("Hide details" if with_details else "Show details", "/list/%s?details=%s" % (
+                restype, "off" if with_details else "on")),
             build_command("New %s" % restype, "/new/%s" % restype),
             build_res_extends(restype),
             "<p>",
@@ -220,7 +225,7 @@ def process_list_resources(resource_type):
 
         for res in res_list:
             fragments.append("<tr>")
-            fragments.extend(build_table_row(res))
+            fragments.extend(build_table_row(res, details=with_details))
             fragments.append("</tr>")
 
         fragments.append("</table></p>")
@@ -276,17 +281,17 @@ def build_table_alt_row(obj):
         "<td>%s</td>" % obj.alt_ids])
     return fragments
 
-def build_table_row(obj):
+def build_table_row(obj, details=True):
     schema = obj._schema
     fragments = []
     fragments.append("<td><a href='/view/%s'>%s</a></td>" % (obj._id,obj._id))
     for field in standard_resattrs:
         if field in schema:
-            value = get_formatted_value(getattr(obj, field), fieldname=field)
+            value = get_formatted_value(getattr(obj, field), fieldname=field, fieldtype=schema[field]["type"], details=True)
             fragments.append("<td>%s</td>" % (value))
     for field in sorted(schema.keys()):
         if field not in standard_resattrs:
-            value = get_formatted_value(getattr(obj, field), fieldname=field, fieldtype=schema[field]["type"], brief=True)
+            value = get_formatted_value(getattr(obj, field), fieldname=field, fieldtype=schema[field]["type"], brief=True, details=details)
             fragments.append("<td>%s</td>" % (value))
     return fragments
 
@@ -334,7 +339,7 @@ def build_nested_obj(obj, prefix, edit=False):
     schema = obj._schema
     for field in standard_resattrs:
         if field in schema:
-            value = get_formatted_value(getattr(obj, field), fieldname=field)
+            value = get_formatted_value(getattr(obj, field), fieldname=field, fieldtype=schema[field]["type"])
             if edit and field not in EDIT_IGNORE_FIELDS:
                 fragments.append("<tr><td>%s%s</td><td>%s</td><td><input type='text' name='%s%s' value='%s' size='60'/></td>" % (prefix, field, schema[field]["type"], prefix, field, getattr(obj, field)))
             else:
@@ -371,10 +376,11 @@ def build_associations(resid):
     fragments.append("<p><table>")
     fragments.append("<tr><th>Subject Type</th><th>Subject Name</th><th>Subject ID</th><th>Predicate</th><th>Command</th></tr>")
     obj_list, assoc_list = Container.instance.resource_registry.find_subjects(object=resid, id_only=False)
-    for obj,assoc in zip(obj_list,assoc_list):
+    iter_list = sorted(zip(obj_list, assoc_list), key=lambda x: [x[1].p, x[0].type_, x[0].name])
+    for obj, assoc in iter_list:
         fragments.append("<tr>")
         fragments.append("<td>%s</td><td>%s&nbsp;</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
-            build_type_link(obj._get_type()), obj.name, build_link(assoc.s, "/view/%s" % assoc.s),
+            build_type_link(obj.type_), obj.name, build_link(assoc.s, "/view/%s" % assoc.s),
             build_link(assoc.p, "/assoc?predicate=%s" % assoc.p),
             build_link("Delete", "/cmd/deleteassoc?rid=%s" % assoc._id, "return confirm('Are you sure to delete association?');")))
 
@@ -385,10 +391,11 @@ def build_associations(resid):
     fragments.append("<p><table>")
     fragments.append("<tr><th>Object Type</th><th>Object Name</th><th>Object ID</th><th>Predicate</th><th>Command</th></tr>")
 
-    for obj,assoc in zip(obj_list,assoc_list):
+    iter_list = sorted(zip(obj_list, assoc_list), key=lambda x: [x[1].p, x[0].type_, x[0].name])
+    for obj, assoc in iter_list:
         fragments.append("<tr>")
         fragments.append("<td>%s</td><td>%s&nbsp;</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
-            build_type_link(obj._get_type()), obj.name, build_link(assoc.o, "/view/%s" % assoc.o),
+            build_type_link(obj.type_), obj.name, build_link(assoc.o, "/view/%s" % assoc.o),
             build_link(assoc.p, "/assoc?predicate=%s" % assoc.p),
             build_link("Delete", "/cmd/deleteassoc?rid=%s" % assoc._id, "return confirm('Are you sure to delete association?');")))
 
@@ -407,7 +414,7 @@ def build_commands(resource_id, restype):
 
     options = [(p, p) for p in sorted(PRED)]
     args = [('select', 'pred', options), ('input', 'rid2', 45)]
-    fragments.append(build_command("Associate from subject", "/cmd/createassoc?rid=%s&dir=to" % resource_id, args))
+    fragments.append(build_command("Associate from subject", "/cmd/createassoc?rid=%s&dir=from" % resource_id, args))
     fragments.append(build_command("Associate to object", "/cmd/createassoc?rid=%s&dir=to" % resource_id, args))
 
     from pyon.ion.resource import LCE, LCS, AS
@@ -778,23 +785,25 @@ def _process_cmd_sites(resource_id, res_obj=None):
                 dev_list = Container.instance.resource_registry.read_mult(dev_id_list)
                 device_info = dict(zip([res._id for res in dev_list], dev_list))
         elif ancestors:
-            dev_id_list = [anc for anc_list in ancestors.values() if anc_list is not None for anc in anc_list]
+            dev_id_list = [anc[1] for anc_list in ancestors.values() if anc_list is not None for anc in anc_list]
             dev_id_list.append(resource_id)
             dev_list = Container.instance.resource_registry.read_mult(dev_id_list)
             device_info = dict(zip([res._id for res in dev_list], dev_list))
 
         def stat(status, stype):
-            stat = status.get(stype, 4)
-            stat_str = ['', "<span style='color:green'>OK</span>","<span style='color:orange'>WARN</span>","<span style='color:red'>ERROR</span>",'?']
+            stat = status.get(stype, 1)
+            stat_str = ['BAD', '--', "<span style='color:green'>OK</span>","<span style='color:orange'>WARN</span>","<span style='color:red'>ERROR</span>"]
             return stat_str[stat]
 
-        def status_table(parent_id, level):
+        def status_table(parent_id, level, recurse=True):
             fragments.append("<tr>")
             par_detail = child_sites.get(parent_id, None) or device_info.get(parent_id, None)
             par_status = statuses.get(parent_id, {})
             entryname = "&nbsp;"*level + build_link(par_detail.name if par_detail else parent_id, "/view/%s" % parent_id)
             if parent_id == resource_id:
                 entryname = "<b>" + entryname + "</b>"
+            if par_detail and par_detail.type_.endswith("Device"):
+                entryname = "<i>" + entryname + "</i>"
             fragments.append("<td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td>" % (
                 entryname,
                 par_detail._get_type() if par_detail else "?",
@@ -802,13 +811,16 @@ def _process_cmd_sites(resource_id, res_obj=None):
                 stat(par_status, objects.AggregateStatusType.AGGREGATE_COMMS), stat(par_status, objects.AggregateStatusType.AGGREGATE_DATA),
                 stat(par_status, objects.AggregateStatusType.AGGREGATE_LOCATION)))
             fragments.append("</tr>")
-            device = devices.get(parent_id, None)
-            if device and len(device) > 1:
-                status_table(device[1], level+1)
+            if recurse:
+                devs = devices.get(parent_id, None) or []
+                for dev in devs:
+                    status_table(dev[1], level+1, recurse=False)
 
-            ch_ids = ancestors.get(parent_id, None) or []
-            for ch_id in ch_ids:
-                status_table(ch_id, level+1)
+                ch_ids = ancestors.get(parent_id, None) or []
+                for ch_id in ch_ids:
+                    if type(ch_id) in (list, tuple):
+                        ch_id = ch_id[1]  # TODO: Check why content type is different site/device
+                    status_table(ch_id, level+1)
 
         status_table(root_id, 0)
         fragments.append("</table></p>")
@@ -1105,6 +1117,33 @@ def process_view_objects():
 
 # ----------------------------------------------------------------------------------------
 
+@app.route('/viewstate', methods=['GET','POST'])
+def process_view_state():
+    try:
+        state_id = get_arg('state_id')
+        args_view = [('input', 'state_id', 45)]
+        fragments = [
+            build_standard_menu(),
+            "<h1>View State</h1>",
+            build_command("State ID", "/viewstate?dummy=1", args_view),
+        ]
+        if state_id:
+            fragments.append("<h2>State Details</h2>")
+            fragments.append("<p><pre>")
+            obj_state, obj = Container.instance.state_repository.get_state(state_id)
+            if obj:
+                value = yaml.dump(obj_state, default_flow_style=False)
+                fragments.append(value)
+            fragments.append("</pre></p>")
+
+        content = "\n".join(fragments)
+        return build_page(content)
+
+    except Exception as e:
+        return build_error_page(traceback.format_exc())
+
+# ----------------------------------------------------------------------------------------
+
 @app.route('/map', methods=['GET'])
 def process_map():
     '''
@@ -1269,19 +1308,23 @@ def get_value_dict(obj, ignore_fields=None):
             val_dict[k] = val
     return val_dict
 
-def get_formatted_value(value, fieldname=None, fieldtype=None, fieldschema=None, brief=False, time_millis=False, is_root=True):
+def get_formatted_value(value, fieldname=None, fieldtype=None, fieldschema=None, brief=False, time_millis=False,
+                        is_root=True, details=True):
     if not fieldtype and fieldschema:
         fieldtype = fieldschema['type']
     if isinstance(value, IonObjectBase):
         if brief:
-            value = "[%s]" % value._get_type()
-    elif fieldtype in ("list","dict"):
-        value = yaml.dump(value, default_flow_style=False)
-        value = value.replace("\n", "<br>")
-        if value.endswith("<br>"):
-            value = value[:-4]
-        if is_root:
-            value = "<span class='preform'>%s</span>" % value
+            value = "[%s]" % value.type_
+    elif fieldtype in ("list", "dict"):
+        if details:
+            value = yaml.dump(value, default_flow_style=False)
+            value = value.replace("\n", "<br>")
+            if value.endswith("<br>"):
+                value = value[:-4]
+            if is_root:
+                value = "<span class='preform'>%s</span>" % value
+        else:
+            value = "..."
     elif fieldschema and 'enum_type' in fieldschema:
         enum_clzz = getattr(objects, fieldschema['enum_type'])
         return enum_clzz._str_map[int(value)]

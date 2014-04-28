@@ -17,10 +17,9 @@ from ion.services.dm.utility.granule_utils import RecordDictionaryTool
 from ion.util.enhanced_resource_registry_client import EnhancedResourceRegistryClient
 from ion.util.time_utils import TimeUtils
 from ion.util.geo_utils import GeoUtils
-from ion.services.dm.utility.granule_utils import time_series_domain
 
 from interface.services.sa.idata_product_management_service import BaseDataProductManagementService
-from interface.objects import DataProduct, DataProductVersion, InformationStatus, DataProcess, DataProcessTypeEnum
+from interface.objects import DataProduct, DataProductVersion, InformationStatus, DataProcess, DataProcessTypeEnum, Device
 from interface.objects import ComputedValueAvailability
 
 from coverage_model import QuantityType, ParameterContext, ParameterDictionary, NumexprFunction, ParameterFunctionType
@@ -395,9 +394,6 @@ class DataProductManagementService(BaseDataProductManagementService):
 
         child_data_product_ids, _ = self.clients.resource_registry.find_subjects(object=data_product_id, predicate=PRED.hasDataProductParent, id_only=True)
 
-        temporal_domain, spatial_domain = time_series_domain()
-        temporal_domain = temporal_domain.dump()
-        spatial_domain = spatial_domain.dump()
 
         dataset_ids, _ = self.clients.resource_registry.find_objects(data_product_id, predicate=PRED.hasDataset, id_only=True)
 
@@ -407,11 +403,9 @@ class DataProductManagementService(BaseDataProductManagementService):
 
         if not dataset_ids:
             # No datasets are currently linked which means we need to create a new one
-            dataset_id = self.clients.dataset_management.create_dataset(   name= 'dataset_%s' % stream_id,
-                                                                            stream_id=stream_id,
-                                                                            parameter_dict=stream_def.parameter_dictionary,
-                                                                            temporal_domain=data_product_obj.temporal_domain or temporal_domain,
-                                                                            spatial_domain=data_product_obj.spatial_domain or spatial_domain)
+            dataset_id = self.clients.dataset_management.create_dataset(name= 'dataset_%s' % stream_id,
+                                                                        stream_id=stream_id,
+                                                                        parameter_dict=stream_def.parameter_dictionary)
 
             # link dataset with data product. This creates the association in the resource registry
             self.RR2.assign_dataset_to_data_product_with_has_dataset(dataset_id, data_product_id)
@@ -589,12 +583,7 @@ class DataProductManagementService(BaseDataProductManagementService):
 
         self.clients.dataset_management.add_parameter_to_dataset(parameter_context_id, dataset_id)
 
-        #TODO: we need a better way of updating the XML files
-        config = DotDict()
-        config.op = 'register_datasets'
-        self.container.spawn_process('refresh_catalog', 'ion.processes.bootstrap.registration_bootstrap', 'RegistrationBootstrap', config)
-
-
+        self.update_catalog_entry(data_product_id) 
         #--------------------------------------------------------------------------------
         # detach the dataset from this data product
         #--------------------------------------------------------------------------------
@@ -800,6 +789,30 @@ class DataProductManagementService(BaseDataProductManagementService):
 
         return provenance_image.getvalue()
 
+    def get_data_product_parameters(self, data_product_id='', id_only=False):
+        stream_defs, _ = self.clients.resource_registry.find_objects(data_product_id, PRED.hasStreamDefinition, id_only=False)
+        if not stream_defs:
+            raise BadRequest("No Stream Definition Found for data product %s" % data_product_id)
+        stream_def = stream_defs[0]
+
+        pdicts, _ = self.clients.resource_registry.find_objects(stream_def._id, PRED.hasParameterDictionary, id_only=True)
+        if not pdicts:
+            raise BadRequest("No Parameter Dictionary Found for data product %s" % data_product_id)
+        pdict_id = pdicts[0]
+        parameters, _ = self.clients.resource_registry.find_objects(pdict_id, PRED.hasParameterContext, id_only=False)
+        if not parameters:
+            raise NotFound("No parameters are associated with this data product")
+
+        # too complicated for one line of code
+        #retval = { p.name : p._id for p in parameters if not filtered or (filtered and p in stream_def.available_fields) }
+        param_id = lambda x, id_only : x._id if id_only else x
+        retval = []
+        for p in parameters:
+            if (stream_def.available_fields and p.name in stream_def.available_fields) or not stream_def.available_fields:
+                retval.append(param_id(p, id_only))
+        return retval
+
+
     def _registration_rpc(self, op, data_product_id):
         procs,_ = self.clients.resource_registry.find_resources(restype=RT.Process, id_only=True)
         pid = None
@@ -813,19 +826,15 @@ class DataProductManagementService(BaseDataProductManagementService):
         return rpc_cli.request({'data_product_id':data_product_id}, op=op)
 
     def create_catalog_entry(self, data_product_id=''):
-        # Stub
         return self._registration_rpc('create_entry',data_product_id) 
 
     def read_catalog_entry(self, data_product_id=''):
-        # Stub
         return self._registration_rpc('read_entry', data_product_id)
 
     def update_catalog_entry(self, data_product_id=''):
-        # Stub
         return self._registration_rpc('update_entry', data_product_id)
 
     def delete_catalog_entry(self, data_product_id=''):
-        # Stub
         return self._registration_rpc('delete_entry', data_product_id)
 
 
@@ -1000,13 +1009,15 @@ class DataProductManagementService(BaseDataProductManagementService):
             ext_exclude=ext_exclude,
             user_id=user_id)
 
-        #Loop through any attachments and remove the actual content since we don't need
-        #   to send it to the front end this way
-        #TODO - see if there is a better way to do this in the extended resource frame work.
-        if hasattr(extended_product, 'attachments'):
-            for att in extended_product.attachments:
-                if hasattr(att, 'content'):
-                    delattr(att, 'content')
+        # Set data product source device (WARNING: may not be unique)
+        extended_product.source_device = None
+        dp_source, _ = self.clients.resource_registry.find_objects(data_product_id, PRED.hasSource, id_only=False)
+        for dps  in dp_source:
+            if isinstance(dps, Device):
+                if extended_product.source_device == None:
+                    extended_product.source_device = dps
+                else:
+                    log.warn("DataProduct %s has additional source device: %s", data_product_id, dps._id)
 
         #extract the list of upstream data products from the provenance results
 #        dp_list = []

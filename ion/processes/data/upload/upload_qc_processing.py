@@ -5,7 +5,7 @@
 @date Wed Apr  2 11:49:10 EDT 2014
 '''
 
-from pyon.core.exception import BadRequest
+from pyon.core.exception import BadRequest, NotFound
 from pyon.ion.process import ImmediateProcess
 from pyon.util.log import log
 import time
@@ -81,7 +81,7 @@ class UploadQcProcessing(ImmediateProcess):
                 # updates[rd][dp] object is now available to have QC 'tables' added (in dict form)
                 # actually process the row (global|stuck|trend|spike|gradient)
                 if qc_type == 'global_range':
-                    if len(row) != 7:
+                    if len(row) < 7:
                         log.warn("invalid global_range line %s" % ','.join(row))
                         continue
                     d = self.parse_global_range(row)
@@ -92,7 +92,7 @@ class UploadQcProcessing(ImmediateProcess):
                         updates[rd][dp]['global_range'] = []
                     updates[rd][dp]['global_range'].append(d)
                 elif qc_type == "stuck_value":
-                    if len(row) != 7:
+                    if len(row) < 7:
                         log.warn("invalid stuck_value line %s" % ','.join(row))
                         continue
                     d = self.parse_stuck_value(row)
@@ -103,7 +103,7 @@ class UploadQcProcessing(ImmediateProcess):
                         updates[rd][dp]['stuck_value'] = []
                     updates[rd][dp]['stuck_value'].append(d)
                 elif qc_type == "trend_test":
-                    if len(row) != 8:
+                    if len(row) < 8:
                         log.warn("invalid trend_test line %s" % ','.join(row))
                         continue
                     d = self.parse_trend_test(row)
@@ -114,7 +114,7 @@ class UploadQcProcessing(ImmediateProcess):
                         updates[rd][dp]['trend_test'] = []
                     updates[rd][dp]['trend_test'].append(d)
                 elif qc_type == "spike_test":
-                    if len(row) != 8:
+                    if len(row) < 8:
                         log.warn("invalid spike_test line %s" % ','.join(row))
                         continue
                     d = self.parse_spike_test(row)
@@ -125,7 +125,7 @@ class UploadQcProcessing(ImmediateProcess):
                         updates[rd][dp]['spike_test'] = []
                     updates[rd][dp]['spike_test'].append(d)
                 elif qc_type == "gradient_test":
-                    if len(row) != 10:
+                    if len(row) < 10:
                         log.warn("invalid gradient_test line %s" % ','.join(row))
                         continue
                     d = self.parse_gradient_test(row)
@@ -233,7 +233,7 @@ class UploadQcProcessing(ImmediateProcess):
         for r in updates: # loops the reference_designators in the updates object
             try: # if reference_designator exists in object_store, read it                           
                 rd = self.object_store.read(r)
-            except: # if does not yet exist in object_store, create it (can't use update_doc because need to set id)
+            except NotFound: # if does not yet exist in object_store, create it (can't use update_doc because need to set id)
                 rd = self.object_store.create_doc({'_type':'QC'},r) # CAUTION: this returns a tuple, not a dict like read() returns
                 rd = self.object_store.read(r) # read so we have a dict like we expect
             # merge all from updates[r] into dict destined for the object_store (rd)
@@ -244,7 +244,7 @@ class UploadQcProcessing(ImmediateProcess):
                     for qc in updates[r][dp]:
                         if qc not in rd[dp]:
                             rd[dp][qc] = [] # initialize (these should always be initialized, but to be safe)
-                        rd[dp][qc].append(updates[r][dp][qc]) # append the list from updates
+                        rd[dp][qc].extend(updates[r][dp][qc]) # append the list from updates
             # store updated reference_designator keyed object in object_store (should overwrite full object)
             self.object_store.update_doc(rd)
 

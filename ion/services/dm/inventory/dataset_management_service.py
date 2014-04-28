@@ -26,6 +26,7 @@ from coverage_model.parameter_functions import AbstractFunction
 from interface.services.sa.idata_process_management_service import DataProcessManagementServiceProcessClient
 from coverage_model import NumexprFunction, PythonFunction, QuantityType, ParameterFunctionType
 from interface.objects import DataProcessDefinition, DataProcessTypeEnum, ParameterFunctionType as PFT
+from ion.services.dm.utility.granule_utils import time_series_domain
 
 from ion.services.eoi.table_loader import ResourceParser
 
@@ -51,28 +52,17 @@ class DatasetManagementService(BaseDatasetManagementService):
         self.inline_data_writes  = self.CFG.get_safe('service.ingestion_management.inline_data_writes', True)
         #self.db = self.container.datastore_manager.get_datastore(self.datastore_name,DataStore.DS_PROFILE.SCIDATA)
 
-        self.rr_table_loader = ResourceParser()
-        self.geos_available = False
-        #check that the services are available 
-        if self.rr_table_loader.use_geo_services:
-            self.geos_available = True
-            # if they are proceed with the reset
-            try:
-                self.rr_table_loader.reset()
-                self.geos_available = True
-                pass
-            except Exception as e:
-                #check the eoi geoserver importer service is started
-                raise e
-
+        using_eoi_services = self.CFG.get_safe('eoi.meta.use_eoi_services', False)
+        if using_eoi_services:
+            self.resource_parser = ResourceParser()
+        else:
+            self.resource_parser = None
 
 #--------
 
-    def create_dataset(self, name='', datastore_name='', view_name='', stream_id='', parameter_dict=None, spatial_domain=None, temporal_domain=None, parameter_dictionary_id='', description='', parent_dataset_id=''):
+    def create_dataset(self, name='', datastore_name='', view_name='', stream_id='', parameter_dict=None, parameter_dictionary_id='', description='', parent_dataset_id=''):
         
         validate_true(parameter_dict or parameter_dictionary_id, 'A parameter dictionary must be supplied to register a new dataset.')
-        validate_is_not_none(spatial_domain, 'A spatial domain must be supplied to register a new dataset.')
-        validate_is_not_none(temporal_domain, 'A temporal domain must be supplied to register a new dataset.')
         
         if parameter_dictionary_id:
             pd = self.read_parameter_dictionary(parameter_dictionary_id)
@@ -89,8 +79,6 @@ class DatasetManagementService(BaseDatasetManagementService):
         dataset.datastore_name       = datastore_name or self.DEFAULT_DATASTORE
         dataset.view_name            = view_name or self.DEFAULT_VIEW
         dataset.parameter_dictionary = parameter_dict
-        dataset.temporal_domain      = temporal_domain
-        dataset.spatial_domain       = spatial_domain
         dataset.registered           = False
 
         
@@ -105,15 +93,15 @@ class DatasetManagementService(BaseDatasetManagementService):
             vcov.close()
             return dataset_id
 
-        cov = self._create_coverage(dataset_id, description or dataset_id, parameter_dict, spatial_domain, temporal_domain) 
+        cov = self._create_coverage(dataset_id, description or dataset_id, parameter_dict)
         self._save_coverage(cov)
         cov.close()
 
-        #table loader code goes here
-        
-        if self.geos_available:
+        #table loader create resource
+        if self._get_eoi_service_available():
             log.debug('DM:create dataset: %s -- dataset_id: %s', name, dataset_id)
-            self.rr_table_loader.create_single_resource(dataset_id, parameter_dict)
+            self._create_single_resource(dataset_id, parameter_dict)
+
 
         return dataset_id
 
@@ -129,9 +117,9 @@ class DatasetManagementService(BaseDatasetManagementService):
         #@todo: Check to make sure retval is boolean
 
         log.debug('DM:update dataset: dataset_id: %s', dataset._id)
-        if self.geos_available:
-            self.rr_table_loader.remove_single_resource(dataset._id)
-            self.rr_table_loader.create_single_resource(dataset._id, dataset.parameter_dictionary)
+        if self._get_eoi_service_available():
+            self._remove_single_resource(dataset._id)
+            self._create_single_resource(dataset._id, dataset.parameter_dictionary)
 
         return True
 
@@ -142,8 +130,8 @@ class DatasetManagementService(BaseDatasetManagementService):
         self.clients.resource_registry.delete(dataset_id)
 
         log.debug('DM:delete dataset: dataset_id: %s', dataset_id)
-        if self.geos_available:
-            self.rr_table_loader.remove_single_resource(dataset_id)
+        if self._get_eoi_service_available():
+            self._remove_single_resource(dataset_id)
 
     def register_dataset(self, data_product_id=''):
         raise BadRequest("register_dataset is no longer supported, please use create_catalog_entry in data product management")
@@ -635,12 +623,11 @@ class DatasetManagementService(BaseDatasetManagementService):
         for assoc in assocs:
             self.clients.resource_registry.delete_association(assoc)
 
-    def _create_coverage(self, dataset_id, description, parameter_dict, spatial_domain,temporal_domain):
+    def _create_coverage(self, dataset_id, description, parameter_dict):
         #file_root = FileSystem.get_url(FS.CACHE,'datasets')
+        temporal_domain, spatial_domain = time_series_domain()
         pdict = ParameterDictionary.load(parameter_dict)
-        sdom = GridDomain.load(spatial_domain)
-        tdom = GridDomain.load(temporal_domain)
-        scov = self._create_simplex_coverage(dataset_id, pdict, sdom, tdom, self.inline_data_writes)
+        scov = self._create_simplex_coverage(dataset_id, pdict, spatial_domain, temporal_domain, self.inline_data_writes)
         #vcov = ViewCoverage(file_root, dataset_id, description or dataset_id, reference_coverage_location=scov.persistence_dir)
         scov.close()
         return scov
@@ -760,3 +747,29 @@ class DatasetManagementService(BaseDatasetManagementService):
             return obj
         else:
             raise BadRequest('obj_id %s not QC' % obj_id)
+    def _create_single_resource(self,dataset_id, param_dict):
+        '''
+        EOI
+        Creates a foreign data table and a geoserver layer for the given dataset
+        and parameter dictionary
+        '''
+        self.resource_parser.create_single_resource(dataset_id,param_dict)
+
+    def _remove_single_resource(self,dataset_id):
+        '''
+        EOI
+        Removes foreign data table and geoserver layer for the given dataset
+        '''
+        self.resource_parser.remove_single_resource(dataset_id)
+
+    def _get_eoi_service_available(self):
+        '''
+        EOI
+        Returns true if geoserver endpoint is running and verified by table 
+        loader process. 
+        
+        Once a true is returned, the result is cached and the process is no 
+        longer queried
+        '''
+
+        return self.resource_parser and self.resource_parser.get_eoi_service_available()

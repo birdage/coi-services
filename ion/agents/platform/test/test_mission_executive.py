@@ -23,8 +23,10 @@ from pyon.event.event import EventPublisher
 from pyon.public import log
 from pyon.public import IonObject
 from pyon.public import RT, PRED
+from pyon.util.config import Config
 from pyon.util.context import LocalContextMixin
-from pyon.util.breakpoint import breakpoint
+from pyon.util.containers import DotDict
+
 
 # Ion imports.
 from ion.agents.platform.rsn.simulator.logger import Logger
@@ -47,16 +49,47 @@ class FakeProcess(LocalContextMixin):
     process_type = ''
 
 
+# to fake a resource agent client
+class FakeAgent(object):
+
+    def __init__(self):
+        self.cmds = {}
+
+    def get_agent(self, cmds):
+        return dict([(c, self.cmds.get(c, None)) for c in cmds])
+
+    def set_agent(self, key, val):
+        self.cmds[key] = val
+
+    def get_capabilities(self):
+        return [DotDict({"name": k}) for k in self.cmds.keys()]
+
+    def get_agent_state(self):
+        return "FAKE"
+
+
 @attr('UNIT')
 class TestParseMission(PyonTestCase):
     """
     Unit tests for the mission parser
     """
 
-    def test_load_YAML(self):
-        mission = MissionLoader()
+    def test_load_mission_file(self):
+        p_agent = FakeAgent()
+        mission = MissionLoader(p_agent)
         filename = "ion/agents/platform/test/mission_RSN_simulator1.yml"
         self.assertTrue(mission.load_mission_file(filename))
+
+    def test_load_mission(self):
+        p_agent = FakeAgent()
+        mission_id = 0
+        mission = MissionLoader(p_agent)
+        filename = "ion/agents/platform/test/mission_RSN_simulator1.yml"
+
+        with open(filename, 'r') as f:
+            mission_string = f.read()
+
+        self.assertTrue(mission.load_mission(mission_id, mission_string))
 
 
 # @unittest.skipIf(os.getenv("OMS") is not None, "OMS environment variable is defined.")
@@ -83,11 +116,9 @@ class TestSimpleMission(BaseIntTestPlatform, PyonTestCase):
         for mission in self.mission.mission_entries:
             for instrument_id in mission['instrument_id']:
                 # create only if not already created:
-                if instrument_id in self._setup_instruments:
-                    i_obj = self._setup_instruments[instrument_id]
-                else:
+                if instrument_id not in self._setup_instruments:
                     i_obj = self._create_instrument(instrument_id, start_port_agent=True)
-                self._assign_instrument_to_platform(i_obj, p_root)
+                    self._assign_instrument_to_platform(i_obj, p_root)
 
         # Start the platform
         self._start_platform(p_root)
@@ -95,6 +126,8 @@ class TestSimpleMission(BaseIntTestPlatform, PyonTestCase):
         # self.addCleanup(self._run_shutdown_commands)
 
         self._instruments = {}
+
+        self._instruments.update({self.PLATFORM_ID: self._pa_client})
         # Now get instrument clients for each instrument
         for mission in self.mission.mission_entries:
             for instrument_id in mission['instrument_id']:
@@ -104,6 +137,7 @@ class TestSimpleMission(BaseIntTestPlatform, PyonTestCase):
                 ia_client = ResourceAgentClient(instrument_device_id, process=FakeProcess())
                 # make a dictionary storing the instrument ids and client objects
                 self._instruments.update({instrument_id: ia_client})
+
 
     def get_mission_attachment(self, filename):
         """
@@ -170,38 +204,65 @@ class TestSimpleMission(BaseIntTestPlatform, PyonTestCase):
         def stair_step_simulator():
             # Let's simulate a profiler stair step scenario
 
-            seconds_between_steps = 120
+            seconds_between_steps = 60
             num_steps = 2
 
+            # Start Mission
+            profiler_event_state_change('StartMission', 1)
+
+            # Going up
+            profiler_event_state_change('StartingAscent', seconds_between_steps)
+
             for x in range(num_profiles):
-                # Going up
-                # state = 'atStep'
-                # for up in range(num_steps):
-                #     profiler_event_state_change(state, seconds_between_steps)
 
-                state = 'atCeiling'
-                profiler_event_state_change(state, seconds_between_steps)
-
-                # Step down
-                state = 'atStep'
+                # Step up
                 for down in range(num_steps):
-                    profiler_event_state_change(state, seconds_between_steps)
+                    profiler_event_state_change('atStep', seconds_between_steps)
+                    profiler_event_state_change('StartingUp', 1)
 
-                state = 'atFloor'
-                profiler_event_state_change(state, seconds_between_steps)
+                # Ascend to ceiling
+                profiler_event_state_change('atCeiling', seconds_between_steps)
+                # Start to descend
+                profiler_event_state_change('StartingDescent', seconds_between_steps)
+                # Arrive at floor
+                profiler_event_state_change('atFloor', seconds_between_steps)
+
+            profiler_event_state_change('MissionComplete', 1)
 
         def up_down_simulator():
             # Let's simulate a profiler up-down scenario
             seconds_between_steps = 5 * 60
 
-            for x in range(num_profiles):
-                # start at bottom
-                state = 'atFloor'
-                profiler_event_state_change(state, seconds_between_steps)
+            # Start Mission
+            profiler_event_state_change('StartMission', 1)
 
-                # ascend to ceiling depth
-                state = 'atCeiling'
-                profiler_event_state_change(state, seconds_between_steps)
+            # Start ascent
+            profiler_event_state_change('StartingAscent', seconds_between_steps)
+
+            for x in range(num_profiles):
+                # Ascend to ceiling
+                profiler_event_state_change('atCeiling', seconds_between_steps)
+                # Start to descend
+                profiler_event_state_change('StartingDescent', seconds_between_steps)
+                # Arrive at floor
+                profiler_event_state_change('atFloor', seconds_between_steps)
+
+            profiler_event_state_change('MissionComplete', 1)
+
+        def simulator_error():
+            # Let's simulate a profiler up-down scenario
+            seconds_between_steps = 60
+
+            # Start Mission
+            profiler_event_state_change('StartMission', 1)
+
+            # Start ascent
+            profiler_event_state_change('StartingAscent', seconds_between_steps)
+
+            # Ascend to ceiling
+            profiler_event_state_change('atCeiling', seconds_between_steps)
+
+            profiler_event_state_change('systemError', 1)
 
         if profile_type == 'stair_step':
             stair_step_simulator()
@@ -212,10 +273,10 @@ class TestSimpleMission(BaseIntTestPlatform, PyonTestCase):
         """
         Load and parse the mission file
         """
-        self.mission = MissionLoader()
+        self.mission = MissionLoader(self._pa_client)
         self.mission.load_mission_file(yaml_filename)
 
-    @skip("Work in progress...")
+    @skip("Deprecated... Use test_mission_manager instead")
     def test_simple_simulator_mission(self):
         """
         Test the RSN OMS platform simulator with the SBE37_SIM instruments
@@ -223,11 +284,13 @@ class TestSimpleMission(BaseIntTestPlatform, PyonTestCase):
         filename = "ion/agents/platform/test/mission_RSN_simulator1.yml"
 
         self.load_mission(yaml_filename=filename)
+        log.debug('mission_entries=%s', self.mission.mission_entries)
 
         self.setup_platform_simulator_and_instruments()
 
         # Start Mission Scheduer
         self.missionSchedule = MissionScheduler(self._pa_client, self._instruments, self.mission.mission_entries)
+        self.missionSchedule.run_mission()
 
     @skip("Work in progress...")
     def test_shallow_profiler_mission(self):
@@ -251,3 +314,4 @@ class TestSimpleMission(BaseIntTestPlatform, PyonTestCase):
 
         # Start Mission Scheduer
         # self.missionSchedule = MissionScheduler(self._pa_client, self._instruments, self.mission.mission_entries)
+        # self.missionSchedule.run_mission()

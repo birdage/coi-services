@@ -18,13 +18,14 @@ from sets import Set
 from pyon.util.int_test import IonIntegrationTestCase
 from pyon.util.unit_test import PyonTestCase
 from pyon.util.containers import DotDict, get_ion_ts
-from pyon.public import IonObject, RT, OT, PRED, Container
+from pyon.public import IonObject, RT, OT, PRED, LCS, Container
 from pyon.core.exception import NotFound, BadRequest
 from pyon.core.bootstrap import get_sys_name, CFG
 from pyon.util.context import LocalContextMixin
 from pyon.util.log import log
 from pyon.util.poller import poll
 from pyon.event.event import EventPublisher, EventSubscriber
+#from pyon.util.containers import get_ion_ts_millis
 
 from ion.services.dm.utility.granule_utils import time_series_domain
 from ion.services.dm.presentation.user_notification_service import UserNotificationService
@@ -38,10 +39,13 @@ from interface.services.dm.ipubsub_management_service import PubsubManagementSer
 from interface.services.dm.idataset_management_service import DatasetManagementServiceClient
 from interface.services.dm.idiscovery_service import DiscoveryServiceClient
 from interface.services.sa.idata_product_management_service import DataProductManagementServiceClient
-from interface.objects import UserInfo, DeliveryConfig, ComputedListValue, ComputedValueAvailability
+from interface.services.sa.iinstrument_management_service import InstrumentManagementServiceClient
+from interface.services.sa.iobservatory_management_service import ObservatoryManagementServiceClient
+from interface.objects import UserInfo, DeliveryConfiguration, ComputedListValue, ComputedValueAvailability
 from interface.objects import DeviceEvent, NotificationPreferences, NotificationDeliveryModeEnum
 from interface.services.cei.ischeduler_service import SchedulerServiceProcessClient
 from interface.objects import NotificationRequest, TemporalBounds, DeviceStatusType, AggregateStatusType
+from interface.objects import DeliveryModeEnum, NotificationFrequencyEnum, NotificationTypeEnum
 from ion.services.dm.utility.uns_utility_methods import setting_up_smtp_client
 
 
@@ -326,6 +330,7 @@ class UserNotificationEventsTest(PyonTestCase):
     def test_get_recent_events(self):
         self.uns.CFG = Mock()
         self.uns.CFG.get_safe = Mock(return_value=1000)
+        self.uns.container = Mock()
         self._load_mock_events(self.event_list1)
 
         res_list = self.uns.get_recent_events(resource_id="ID_1")
@@ -352,6 +357,8 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         self.rrc = ResourceRegistryServiceClient()
         self.imc = IdentityManagementServiceClient()
         self.discovery = DiscoveryServiceClient()
+        self.ims = InstrumentManagementServiceClient()
+        self.oms = ObservatoryManagementServiceClient()
 
         self.event = Event()
         self.number_event_published = 0
@@ -507,8 +514,6 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         user_1 = UserInfo()
         user_1.name = 'user_1'
         user_1.contact.email = 'user_1@yahoo.com'
-        user_1.variables.extend( [  {'name' : 'notifications_disabled', 'value' : False},
-                                 {'name' : 'notifications_daily_digest', 'value' : False}  ] )
 
         user_id_1, _ = self.rrc.create(user_1)
 
@@ -519,8 +524,6 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         user_2 = UserInfo()
         user_2.name = 'user_2'
         user_2.contact.email = 'user_2@yahoo.com'
-        user_2.variables.extend( [  {'name' : 'notifications_disabled', 'value' : True},
-                                 {'name' : 'notifications_daily_digest', 'value' : True}  ] )
 
         user_id_2, _ = self.rrc.create(user_2)
 
@@ -655,7 +658,7 @@ class UserNotificationIntTest(IonIntegrationTestCase):
 
         log.debug("REQ: L4-CI-DM-RQ-56 was satisfied here for UNS")
 
-
+    @unittest.skip('Under construction. ')
     def test_user_info_notification_worker(self):
         # Test the user_info and reverse user info dictionary capability of the notification worker
 
@@ -665,8 +668,6 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         user = UserInfo()
         user.name = 'new_user'
         user.contact.email = 'new_user@gmail.com'
-        user.variables.extend( [  {'name' : 'notifications_disabled', 'value' : False},
-                                 {'name' : 'notifications_daily_digest', 'value' : False}  ] )
 
         #--------------------------------------------------------------------------------------
         # Create a user subscribed to BATCH notifications
@@ -675,8 +676,6 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         user_batch = UserInfo()
         user_batch.name = 'user_batch'
         user_batch.contact.email = 'user_batch@gmail.com'
-        user_batch.variables.extend( [  {'name' : 'notifications_disabled', 'value' : False},
-                                 {'name' : 'notifications_daily_digest', 'value' : True}  ] )
 
 
         #--------------------------------------------------------------------------------------
@@ -686,8 +685,6 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         user_disabled = UserInfo()
         user_disabled.name = 'user_disabled'
         user_disabled.contact.email = 'user_disabled@gmail.com'
-        user_disabled.variables.extend( [  {'name' : 'notifications_disabled', 'value' : True},
-                                 {'name' : 'notifications_daily_digest', 'value' : False}  ] )
 
 
         # this part of code is in the beginning to allow enough time for users_index creation
@@ -757,15 +754,6 @@ class UserNotificationIntTest(IonIntegrationTestCase):
 
         # read back the registered notification request objects
         notification_request_correct = self.rrc.read(notification_id_1)
-
-        self.assertEquals(reloaded_user_info[user_id]['notifications_daily_digest'], False )
-        self.assertEquals(reloaded_user_info[user_id]['notifications_disabled'], False )
-
-        self.assertEquals(reloaded_user_info[user_batch_id]['notifications_daily_digest'], True )
-        self.assertEquals(reloaded_user_info[user_batch_id]['notifications_disabled'], False )
-
-        self.assertEquals(reloaded_user_info[user_disabled_id]['notifications_daily_digest'], False )
-        self.assertEquals(reloaded_user_info[user_disabled_id]['notifications_disabled'], True )
 
         self.assertEquals(reloaded_user_info[user_id]['user_contact'].email, 'new_user@gmail.com')
 
@@ -838,9 +826,6 @@ class UserNotificationIntTest(IonIntegrationTestCase):
     def test_process_batch(self):
         # Test that the process_batch() method works
 
-        test_start_time = get_ion_ts() # Note this time is in milliseconds
-        test_end_time = str(int(get_ion_ts()) + 10000) # Adding 10 seconds
-
         #--------------------------------------------------------------------------------------
         # Publish events corresponding to the notification requests just made
         # These events will get stored in the event repository allowing UNS to batch process
@@ -859,15 +844,17 @@ class UserNotificationIntTest(IonIntegrationTestCase):
                 event_type=OT.ResourceLifecycleEvent)
 
             event_publisher.publish_event(
-                origin="instrument_3",
-                origin_type="type_3",
-                event_type=OT.ResourceLifecycleEvent)
+                origin="instrument_2",
+                origin_type="type_2",
+                event_type=OT.DetectionEvent)
+
+        gevent.sleep(5)
 
         #----------------------------------------------------------------------------------------
         # Create users and get the user_ids
         #----------------------------------------------------------------------------------------
 
-        # user_1  -- default notification preferences  - notifications_disabled and notifications_daily_digest are False
+        # user_1  -- default notification preferences
         user_1 = UserInfo()
         user_1.name = 'user_1'
         user_1.contact.email = 'user_1@gmail.com'
@@ -876,8 +863,7 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         user_2 = UserInfo()
         user_2.name = 'user_2'
         user_2.contact.email = 'user_2@gmail.com'
-        user_2.variables.extend( [  {'name' : 'notifications_disabled', 'value' : False},
-                                 {'name' : 'notifications_daily_digest', 'value' : True}  ] )
+
 
 
         # user_3  --- delivery enabled at default
@@ -885,24 +871,19 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         user_3 = UserInfo()
         user_3.name = 'user_3'
         user_3.contact.email = 'user_3@gmail.com'
-        user_3.variables.extend( [  {'name' : 'notifications_disabled', 'value' : False},
-                                 {'name' : 'notifications_daily_digest', 'value' : True}  ] )
 
         # user_4   --- prefers REALTIME notification
 
         user_4 = UserInfo()
         user_4.name = 'user_4'
         user_4.contact.email = 'user_4@gmail.com'
-        user_4.variables.extend( [  {'name' : 'notifications_disabled', 'value' : False},
-                                 {'name' : 'notifications_daily_digest', 'value' : False}  ] )
 
         # user_5   --- delivery disabled
 
         user_5 = UserInfo()
         user_5.name = 'user_5'
         user_5.contact.email = 'user_5@gmail.com'
-        user_5.variables.extend( [  {'name' : 'notifications_disabled', 'value' : True},
-                                 {'name' : 'notifications_daily_digest', 'value' : True}  ] )
+
 
         # this part of code is in the beginning to allow enough time for the users_index creation
 
@@ -922,46 +903,63 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         # Make notification request objects -- Remember to put names
         #--------------------------------------------------------------------------------------
 
-        notification_request_correct = NotificationRequest(   name = "notification_1",
+
+        delivery_config1a = IonObject(OT.DeliveryConfiguration, email='user_1@gmail.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.BATCH)
+        delivery_config1b = IonObject(OT.DeliveryConfiguration, email='user_1@yahoo.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.BATCH)
+        notification_request_1 = NotificationRequest(   name = "notification_1",
             origin="instrument_1",
             origin_type="type_1",
-            event_type=OT.ResourceLifecycleEvent)
+            event_type=OT.ResourceLifecycleEvent,
+            delivery_configurations=[delivery_config1a, delivery_config1b])
 
+        delivery_config2a = IonObject(OT.DeliveryConfiguration, email='user_2@gmail.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.BATCH)
+        delivery_config2b = IonObject(OT.DeliveryConfiguration, email='user_2@yahoo.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.BATCH)
         notification_request_2 = NotificationRequest(   name = "notification_2",
             origin="instrument_2",
             origin_type="type_2",
-            event_type=OT.DetectionEvent)
+            event_type=OT.DetectionEvent,
+            delivery_configurations=[delivery_config2a, delivery_config2b])
 
-
+        delivery_config3 = IonObject(OT.DeliveryConfiguration, email='user_3@gmail.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.BATCH)
         notification_request_3 = NotificationRequest(   name = "notification_3",
-            origin="instrument_3",
-            origin_type="type_3",
-            event_type=OT.ResourceLifecycleEvent)
+            origin="*",
+            event_type=OT.DetectionEvent,
+            delivery_configurations=[delivery_config3])
 
+        delivery_config4 = IonObject(OT.DeliveryConfiguration, email='user_4@gmail.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.BATCH)
+        notification_request_4 = NotificationRequest(   name = "notification_4",
+            origin="*",
+            origin_type="type_2",
+            event_type='',
+            delivery_configurations=[delivery_config4])
+        deliver_emails = ['user_1@gmail.com', 'user_1@yahoo.com', 'user_2@gmail.com', 'user_2@yahoo.com', 'user_3@gmail.com', 'user_4@gmail.com']
 
 
         #--------------------------------------------------------------------------------------
         # Create a notification using UNS. This should cause the user_info to be updated
         #--------------------------------------------------------------------------------------
 
-        self.unsc.create_notification(notification=notification_request_correct, user_id=user_id_1)
-        self.unsc.create_notification(notification=notification_request_2, user_id=user_id_1)
-
+        self.unsc.create_notification(notification=notification_request_1, user_id=user_id_1)
         self.unsc.create_notification(notification=notification_request_2, user_id=user_id_2)
 
-        self.unsc.create_notification(notification=notification_request_2, user_id=user_id_3)
+        #self.unsc.create_notification(notification=notification_request_2, user_id=user_id_2)
+        #
+        #self.unsc.create_notification(notification=notification_request_2, user_id=user_id_3)
         self.unsc.create_notification(notification=notification_request_3, user_id=user_id_3)
-
-        self.unsc.create_notification(notification=notification_request_correct, user_id=user_id_4)
-        self.unsc.create_notification(notification=notification_request_3, user_id=user_id_4)
-
-        self.unsc.create_notification(notification=notification_request_correct, user_id=user_id_5)
-        self.unsc.create_notification(notification=notification_request_3, user_id=user_id_5)
+        #
+        #self.unsc.create_notification(notification=notification_request_correct, user_id=user_id_4)
+        self.unsc.create_notification(notification=notification_request_4, user_id=user_id_4)
+        #
+        #self.unsc.create_notification(notification=notification_request_correct, user_id=user_id_5)
+        #self.unsc.create_notification(notification=notification_request_3, user_id=user_id_5)
 
         #--------------------------------------------------------------------------------------
         # Do a process_batch() in order to start the batch notifications machinery
         #--------------------------------------------------------------------------------------
-
+        #use a 10 second range from current time
+        current_timestamp = int(time.time() * 1000)
+        test_start_time = str( current_timestamp - 10000 )
+        test_end_time = str( current_timestamp + 8000)
         self.unsc.process_batch(start_time=test_start_time, end_time= test_end_time)
 
         #--------------------------------------------------------------------------------------
@@ -975,15 +973,206 @@ class UserNotificationIntTest(IonIntegrationTestCase):
 
         while not proc1.smtp_client.sent_mail.empty():
             email_tuple = proc1.smtp_client.sent_mail.get(timeout=10)
+            log.debug('test_process_batch  email_tuple: %s', email_tuple)
             email_list.append(email_tuple)
 
-        self.assertEquals(len(email_list), 1)
 
         for email_tuple in email_list:
             msg_sender, msg_recipient, msg = email_tuple
 
             self.assertEquals(msg_sender, CFG.get_safe('server.smtp.sender') )
-            self.assertTrue(msg_recipient in ['user_1@gmail.com', 'user_2@gmail.com', 'user_3@gmail.com'])
+            self.assertTrue(msg_recipient in deliver_emails)
+
+            lines = msg.split("\r\n")
+
+            maps = []
+
+            for line in lines:
+                maps.extend(line.split(','))
+
+            event_type=''
+            event_time = ''
+            notification_request_name = ''
+            # check that required fields are present in description of event
+            for map in maps:
+                fields = map.split(":")
+                if fields[0].find("Date & Time") > -1:
+                    event_time = fields[1].strip(" ")
+                    #log.debug('test_process_batch event_time: %s', event_time)
+                if fields[0].find("Notification Request Name") > -1:
+                    notification_request_name = fields[1].strip(" ")
+                    #log.debug('test_process_batch nr_name: %s', notification_request_name)
+                if fields[0].find("Event Type") > -1:
+                    event_type = fields[1].strip(" ")
+                    #log.debug('test_process_batch nr_name: %s', event_type)
+            self.assertIsNotNone(event_time)
+            self.assertIsNotNone(notification_request_name)
+            self.assertIsNotNone(event_type)
+
+
+
+    def test_aggregate_notifications_batch(self):
+        # Test that the process_batch() method works
+
+        #----------------------------------------------------------------------------------------
+        # Create org, sites and devices
+        #----------------------------------------------------------------------------------------
+
+
+        org_obj = IonObject(RT.Org,
+                            name='TestOrg',
+                            description='some new mf org')
+
+        org_id =  self.oms.create_marine_facility(org_obj)
+
+
+
+        platform_site__obj = IonObject(RT.PlatformSite,
+                                        name='PlatformSite1',
+                                        description='test platform site')
+        platform_site_id = self.oms.create_platform_site(platform_site__obj)
+
+        platform_device__obj = IonObject(RT.PlatformDevice,
+                                        name='PlatformDevice1',
+                                        description='test platform device')
+        platform_device_id = self.ims.create_platform_device(platform_device__obj)
+
+
+        instrument_site_obj = IonObject(RT.InstrumentSite,
+                                        name='InstrumentSite1',
+                                        description='test instrument site',
+                                        reference_designator='GA01SUMO-FI003-01-CTDMO0999')
+        instrument_site_id = self.oms.create_instrument_site(instrument_site_obj, platform_site_id)
+
+        instrument_device_obj = IonObject(RT.InstrumentDevice,
+                                        name='InstrumentDevice1',
+                                        description='test instrument device')
+        instrument_device_id = self.ims.create_instrument_device(instrument_device_obj)
+        self.rrc.create_association(platform_device_id, PRED.hasDevice, instrument_device_id)
+
+
+        self.oms.assign_resource_to_observatory_org(resource_id=platform_site_id, org_id=org_id)
+        self.oms.assign_resource_to_observatory_org(resource_id=platform_device_id, org_id=org_id)
+        self.oms.assign_resource_to_observatory_org(resource_id=instrument_site_id, org_id=org_id)
+        self.oms.assign_resource_to_observatory_org(resource_id=instrument_device_id, org_id=org_id)
+
+
+        #--------------------------------------------------------------------------------------
+        # Publish events corresponding to the notification requests just made
+        # These events will get stored in the event repository allowing UNS to batch process
+        # them later for batch notifications
+        #--------------------------------------------------------------------------------------
+
+        event_publisher = EventPublisher()
+
+        # this part of code is in the beginning to allow enough time for the events_index creation
+
+        for i in xrange(10):
+
+            event_publisher.publish_event(
+                origin=instrument_device_id,
+                origin_type="InstrumentDevice",
+                event_type=OT.DeviceStatusEvent)
+
+            event_publisher.publish_event(
+                origin=instrument_site_id,
+                origin_type="InstrumentSite",
+                event_type=OT.ResourceLifecycleEvent)
+
+        gevent.sleep(3)
+
+        #----------------------------------------------------------------------------------------
+        # Create users and get the user_ids
+        #----------------------------------------------------------------------------------------
+
+        # user_1
+        user_1 = UserInfo()
+        user_1.name = 'user_1'
+        user_1.contact.email = 'user_1@gmail.com'
+
+
+        # this part of code is in the beginning to allow enough time for the users_index creation
+
+        user_id_1, _ = self.rrc.create(user_1)
+
+
+        #--------------------------------------------------------------------------------------
+        # Grab the UNS process
+        #--------------------------------------------------------------------------------------
+
+        proc1 = self.container.proc_manager.procs_by_name['user_notification']
+
+        #--------------------------------------------------------------------------------------
+        # Make notification request objects -- Remember to put names
+        #--------------------------------------------------------------------------------------
+
+
+        delivery_config1a = IonObject(OT.DeliveryConfiguration, email='user_1@yahoo.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.BATCH)
+        notification_request_1 = NotificationRequest(   name = "device_notification",
+            type=NotificationTypeEnum.PLATFORM,
+            origin=platform_device_id,
+            origin_type="PlatformDevice",
+            event_type=OT.DeviceStatusEvent,
+            delivery_configurations=[delivery_config1a])
+
+
+        delivery_config1b = IonObject(OT.DeliveryConfiguration, email='user_1@yahoo.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.BATCH)
+        notification_request_2 = NotificationRequest(   name = "site_notification",
+            type=NotificationTypeEnum.SITE,
+            origin=platform_site_id,
+            origin_type="PlatformSite",
+            event_type=OT.ResourceLifecycleEvent,
+            delivery_configurations=[delivery_config1b])
+
+
+        delivery_config1c = IonObject(OT.DeliveryConfiguration, email='', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.BATCH)
+        notification_request_3 = NotificationRequest(   name = "facility_notification",
+            type=NotificationTypeEnum.FACILITY,
+            origin=org_id,
+            origin_type="Org",
+            event_type="",
+            delivery_configurations=[delivery_config1c])
+
+        deliver_emails = ['user_1@gmail.com', 'user_1@yahoo.com']
+
+
+        #--------------------------------------------------------------------------------------
+        # Create a notification using UNS. This should cause the user_info to be updated
+        #--------------------------------------------------------------------------------------
+
+        self.unsc.create_notification(notification=notification_request_1, user_id=user_id_1)
+        self.unsc.create_notification(notification=notification_request_2, user_id=user_id_1)
+        self.unsc.create_notification(notification=notification_request_3, user_id=user_id_1)
+
+        #--------------------------------------------------------------------------------------
+        # Do a process_batch() in order to start the batch notifications machinery
+        #--------------------------------------------------------------------------------------
+        #use a 10 second range from current time
+        current_timestamp = int(time.time() * 1000)
+        test_start_time = str( current_timestamp - 10000 )
+        test_end_time = str( current_timestamp + 10000)
+        self.unsc.process_batch(start_time=test_start_time, end_time= test_end_time)
+
+        #--------------------------------------------------------------------------------------
+        # Check that the emails were sent to the users. This is done using the fake smtp client
+        # Make assertions....
+        #--------------------------------------------------------------------------------------
+
+        self.assertFalse(proc1.smtp_client.sent_mail.empty())
+
+        email_list = []
+
+        while not proc1.smtp_client.sent_mail.empty():
+            email_tuple = proc1.smtp_client.sent_mail.get(timeout=10)
+            log.debug('test_process_batch  email_tuple: %s', email_tuple)
+            email_list.append(email_tuple)
+
+
+        for email_tuple in email_list:
+            msg_sender, msg_recipient, msg = email_tuple
+
+            self.assertEquals(msg_sender, CFG.get_safe('server.smtp.sender') )
+            self.assertTrue(msg_recipient in deliver_emails)
 
             lines = msg.split("\r\n")
 
@@ -992,19 +1181,23 @@ class UserNotificationIntTest(IonIntegrationTestCase):
             for line in lines:
 
                 maps.extend(line.split(','))
-
-            event_time = ''
+            # validate that Events for for the InstrumentDevice and the InstrumentSite were included in an email
+            instrument_site_event_found = False
+            instrument_device_event_found = False
             for map in maps:
                 fields = map.split(":")
-                if fields[0].find("Time of event") > -1:
-                    event_time = fields[1].strip(" ")
-                    break
+                if fields[0].find("Resource") > -1:
+                    if fields[1].find("InstrumentDevice") > -1:
+                        instrument_device_event_found = True
+                    if fields[1].find("InstrumentSite") > -1:
+                        instrument_site_event_found = True
 
-            self.assertIsNotNone(event_time)
+            self.assertTrue(instrument_site_event_found)
+            self.assertTrue(instrument_device_event_found)
 
-#            # Check that the events sent in the email had times within the user specified range
-#            self.assertTrue(event_time >= test_start_time)
-#            self.assertTrue(event_time <= test_end_time)
+
+
+
 
 
     def test_worker_send_email(self):
@@ -1052,20 +1245,42 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         # Make notification request objects -- Remember to put names
         #--------------------------------------------------------------------------------------
 
-        notification_request_1 = NotificationRequest(   name = "notification_1",
+        delivery_config1a = IonObject(OT.DeliveryConfiguration, email='user_2@gmail.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.REAL_TIME)
+        notification_request_1a = NotificationRequest(   name = "notification_1",
             origin="instrument_1",
             event_type=OT.ResourceLifecycleEvent,
+            delivery_configurations=[delivery_config1a]
         )
 
-        notification_request_2 = NotificationRequest(   name = "notification_2",
+        delivery_config2a = IonObject(OT.DeliveryConfiguration, email='user_2@gmail.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.REAL_TIME)
+        notification_request_2a = NotificationRequest(   name = "notification_2a",
             origin="instrument_2",
             event_type=OT.DeviceStatusEvent,
+            delivery_configurations=[delivery_config2a]
         )
 
-        notification_request_3 = NotificationRequest(   name = "notification_3",
-            origin="instrument_3",
-            event_type=OT.DeviceCommsEvent,
+        delivery_config2b = IonObject(OT.DeliveryConfiguration, email='user_2@gmail.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.REAL_TIME)
+        notification_request_2b = NotificationRequest(   name = "notification_2b",
+            origin="instrument_2",
+            event_type=OT.DeviceStatusEvent,
+            delivery_configurations=[delivery_config2b]
         )
+
+        delivery_config3a = IonObject(OT.DeliveryConfiguration, email='user_3@gmail.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.DISABLED)
+        notification_request_3a = NotificationRequest(   name = "notification_3a",
+            origin="instrument_2",
+            event_type=OT.DeviceStatusEvent,
+            delivery_configurations=[delivery_config3a]
+        )
+
+
+        delivery_config4a = IonObject(OT.DeliveryConfiguration, email='user_4@gmail.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.BATCH)
+        notification_request_4a = NotificationRequest(   name = "notification_4a",
+            origin="instrument_2",
+            event_type=OT.DeviceStatusEvent,
+            delivery_configurations=[delivery_config4a]
+        )
+
 
         #--------------------------------------------------------------------------------------
         # Create notification workers
@@ -1100,19 +1315,19 @@ class UserNotificationIntTest(IonIntegrationTestCase):
 
         q = gevent.queue.Queue()
 
-        id1 = self.unsc.create_notification(notification=notification_request_1, user_id=user_id_1)
+        id1 = self.unsc.create_notification(notification=notification_request_1a, user_id=user_id_1)
         q.put(id1)
 
-        id2 = self.unsc.create_notification(notification=notification_request_2, user_id=user_id_2)
+        id2 = self.unsc.create_notification(notification=notification_request_2a, user_id=user_id_2)
         q.put(id2)
 
-        id3 = self.unsc.create_notification(notification=notification_request_3, user_id=user_id_2)
+        id3 = self.unsc.create_notification(notification=notification_request_2b, user_id=user_id_2)
         q.put(id3)
 
-        id4 = self.unsc.create_notification(notification=notification_request_1, user_id=user_id_3)
+        id4 = self.unsc.create_notification(notification=notification_request_3a, user_id=user_id_3)
         q.put(id4)
 
-        id5 = self.unsc.create_notification(notification=notification_request_1, user_id=user_id_4)
+        id5 = self.unsc.create_notification(notification=notification_request_4a, user_id=user_id_4)
         q.put(id5)
 
         # Wait till all the notifications have been created....
@@ -1362,6 +1577,7 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         notific_2 = self.rrc.read(notification_id2)
         # This checks that the notifications have been retired.
         self.assertNotEquals(notific_2.temporal_bounds.end_datetime, '')
+        self.assertEquals(notific_2.lcstate, LCS.RETIRED)
 
         # Now check the user info object has the notifications
         user = self.rrc.read(user_id)
@@ -1384,7 +1600,10 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         #--------------------------------------------------------------------------------------
         self.unsc.delete_notification(notification_id1)
         notific_1 = self.rrc.read(notification_id1)
+        log.debug('test_delete_user_notifications notific_1:  %s ', notific_1)
         self.assertNotEquals(notific_1.temporal_bounds.end_datetime, '')
+        self.assertEquals(notific_1.lcstate, LCS.RETIRED)
+
 
         # Now check the user info object has the notifications
         user = self.rrc.read(user_id)
@@ -1629,27 +1848,22 @@ class UserNotificationIntTest(IonIntegrationTestCase):
 
         def publish_events():
             for i in xrange(3):
-                t = get_ion_ts()
 
-                event_publisher.publish_event( ts_created= t ,
+                event_publisher.publish_event(
                     origin="instrument_1",
                     origin_type="type_1",
                     event_type=OT.ResourceLifecycleEvent)
 
-                event_publisher.publish_event( ts_created= t ,
+                event_publisher.publish_event(
                     origin="instrument_2",
                     origin_type="type_2",
                     event_type=OT.ResourceLifecycleEvent)
 
-                times_of_events_published.add(t)
                 self.number_event_published += 2
                 self.event.set()
-                #            time.sleep(1)
-                log.debug("Published events of origins = instrument_1, instrument_2 with ts_created: %s" % t)
 
         publish_events()
 
-        self.assertTrue(self.event.wait(10))
         #----------------------------------------------------------------------------------------
         # Create users and get the user_ids
         #----------------------------------------------------------------------------------------
@@ -1668,16 +1882,24 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         #--------------------------------------------------------------------------------------
         # Make notification request objects -- Remember to put names
         #--------------------------------------------------------------------------------------
-
+        delivery_config1a = IonObject(OT.DeliveryConfiguration, email='user_1@gmail.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.BATCH)
         notification_request_correct = NotificationRequest(   name = "notification_1",
+            type=NotificationTypeEnum.SIMPLE,
             origin="instrument_1",
             origin_type="type_1",
-            event_type=OT.ResourceLifecycleEvent)
+            event_type=OT.ResourceLifecycleEvent,
+            delivery_configurations=[delivery_config1a])
 
+        delivery_config1b = IonObject(OT.DeliveryConfiguration, email='user_1@yahoo.com', mode=DeliveryModeEnum.UNFILTERED, frequency=NotificationFrequencyEnum.BATCH)
         notification_request_2 = NotificationRequest(   name = "notification_2",
+            type=NotificationTypeEnum.SIMPLE,
             origin="instrument_2",
             origin_type="type_2",
-            event_type=OT.ResourceLifecycleEvent)
+            event_type=OT.ResourceLifecycleEvent,
+            delivery_configurations=[delivery_config1b])
+
+        deliver_emails = ["user_1@gmail.com", "user_1@yahoo.com"]
+
 
         #--------------------------------------------------------------------------------------
         # Create a notification using UNS. This should cause the user_info to be updated
@@ -1692,8 +1914,8 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         #--------------------------------------------------------------------------------
 
         # Set up a time for the scheduler to trigger timer events
-        # Trigger the timer event 15 seconds later from now
-        time_now = datetime.utcnow() + timedelta(seconds=15)
+        # Trigger the timer event 3 seconds later from now
+        time_now = datetime.utcnow() + timedelta(seconds=3)
         times_of_day =[{'hour': str(time_now.hour),'minute' : str(time_now.minute), 'second':str(time_now.second) }]
 
         sid = self.ssclient.create_time_of_day_timer(   times_of_day=times_of_day,
@@ -1718,38 +1940,48 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         #--------------------------------------------------------------------------------
         # Assert that emails were sent
         #--------------------------------------------------------------------------------
+        # wait for the timer to go off.
+        gevent.sleep(6)
+        proc1 = self.container.proc_manager.procs_by_name['user_notification']
 
-        proc = self.container.proc_manager.procs_by_name['user_notification']
 
-        ar_1 = gevent.event.AsyncResult()
-        ar_2 = gevent.event.AsyncResult()
 
-        def send_email(events_for_message, user_id, *args, **kwargs):
-            log.warning("(in asyncresult) events_for_message: %s" % events_for_message)
-            ar_1.set(events_for_message)
-            ar_2.set(user_id)
+        email_list = []
+        while not proc1.smtp_client.sent_mail.empty():
+            email_tuple = proc1.smtp_client.sent_mail.get(timeout=10)
+            log.debug('test_process_batch  email_tuple: %s', email_tuple)
+            email_list.append(email_tuple)
 
-        proc.format_and_send_email = send_email
 
-        events_for_message = ar_1.get(timeout=20)
-        user_id = ar_2.get(timeout=20)
+        for email_tuple in email_list:
+            msg_sender, msg_recipient, msg = email_tuple
 
-        log.warning("user_id: %s" % user_id)
+            self.assertEquals(msg_sender, CFG.get_safe('server.smtp.sender') )
+            self.assertTrue(msg_recipient in deliver_emails)
 
-        origins_of_events = Set()
-        times = Set()
+            lines = msg.split("\r\n")
 
-        for event in events_for_message:
-            origins_of_events.add(event.origin)
-            times.add(event.ts_created)
+            maps = []
+
+            for line in lines:
+                maps.extend(line.split(','))
+
+            event_time = ''
+            for map in maps:
+                fields = map.split(":")
+                log.debug('test_aggregate_notifications_batch  fields: %s', fields)
+                if fields[0].find("Date & Time") > -1:
+                    event_time = fields[1].strip(" ")
+                    self.assertIsNotNone(event_time)
+                    log.debug('test_aggregate_notifications_batch  event_time: %s', event_time)
+
 
         #--------------------------------------------------------------------------------
         # Make assertions on the events mentioned in the formatted email
         #--------------------------------------------------------------------------------
 
-        self.assertEquals(len(events_for_message), self.number_event_published)
-        self.assertEquals(times, times_of_events_published)
-        self.assertEquals(origins_of_events, Set(['instrument_1', 'instrument_2']))
+        self.assertEquals(len(email_list), len(deliver_emails))
+        #self.assertEquals(origins_of_events, Set(['instrument_1', 'instrument_2']))
 
     def test_get_user_notifications(self):
         # Test that the get_user_notifications() method returns the notifications for a user
@@ -1900,18 +2132,14 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         data_product_management = DataProductManagementServiceClient()
         dataset_management = DatasetManagementServiceClient()
         pubsub = PubsubManagementServiceClient()
-        
+
         pdict_id = dataset_management.read_parameter_dictionary_by_name('ctd_parsed_param_dict', id_only=True)
         streamdef_id = pubsub.create_stream_definition(name="test_subscriptions", parameter_dictionary_id=pdict_id)
 
-        tdom, sdom = time_series_domain()
-        tdom, sdom = tdom.dump(), sdom.dump()
 
         dp_obj = IonObject(RT.DataProduct,
             name='DP1',
-            description='some new dp',
-            temporal_domain = tdom,
-            spatial_domain = sdom)
+            description='some new dp')
 
         data_product_id = data_product_management.create_data_product(data_product=dp_obj, stream_definition_id=streamdef_id)
 
@@ -2055,14 +2283,10 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         pdict_id = dataset_management.read_parameter_dictionary_by_name('ctd_parsed_param_dict', id_only=True)
         streamdef_id = pubsub.create_stream_definition(name="test_subscriptions", parameter_dictionary_id=pdict_id)
 
-        tdom, sdom = time_series_domain()
-        tdom, sdom = tdom.dump(), sdom.dump()
 
         dp_obj = IonObject(RT.DataProduct,
             name='DP1',
-            description='some new dp',
-            temporal_domain = tdom,
-            spatial_domain = sdom)
+            description='some new dp')
 
         data_product_id = data_product_management.create_data_product(data_product=dp_obj, stream_definition_id=streamdef_id)
 
@@ -2275,14 +2499,10 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         pdict_id = dataset_management.read_parameter_dictionary_by_name('ctd_parsed_param_dict', id_only=True)
         streamdef_id = pubsub.create_stream_definition(name="test_subscriptions", parameter_dictionary_id=pdict_id)
 
-        tdom, sdom = time_series_domain()
-        tdom, sdom = tdom.dump(), sdom.dump()
 
         dp_obj = IonObject(RT.DataProduct,
             name='DP1',
-            description='some new dp',
-            temporal_domain = tdom,
-            spatial_domain = sdom)
+            description='some new dp')
 
         data_product_id = data_product_management.create_data_product(data_product=dp_obj, stream_definition_id=streamdef_id)
 
@@ -2327,7 +2547,3 @@ class UserNotificationIntTest(IonIntegrationTestCase):
         self.assertEquals(notif.origin, data_product_id)
         self.assertEquals(notif.event_type, OT.ResourceLifecycleEvent)
         self.assertEquals(notif.name, "notification_1")
-
-
-
-

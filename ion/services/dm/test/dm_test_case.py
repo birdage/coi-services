@@ -80,12 +80,8 @@ class DMTestCase(IonIntegrationTestCase):
         if not (stream_def_id or param_dict_name or pdict_id):
             raise AssertionError('Attempted to create a Data Product without a parameter dictionary')
 
-        tdom, sdom = time_series_domain()
 
-        dp = DataProduct(name=name,
-                spatial_domain = sdom.dump(),
-                temporal_domain = tdom.dump(),
-                )
+        dp = DataProduct(name=name)
 
         stream_def_id = stream_def_id or self.create_stream_definition('%s stream def' % name, 
                 parameter_dictionary_id=pdict_id or self.RR2.find_resource_by_name(RT.ParameterDictionary,
@@ -127,7 +123,7 @@ class DMTestCase(IonIntegrationTestCase):
         
         self.container.spawn_process('preloader', 'ion.processes.bootstrap.ion_loader', 'IONLoader', config)
     
-    def strap_erddap(self, data_product_id=None):
+    def strap_erddap(self, data_product_id=None, open_page=True):
         '''
         Copies the datasets.xml to /tmp
         '''
@@ -139,9 +135,10 @@ class DMTestCase(IonIntegrationTestCase):
             with open('/tmp/erddap/flag/data%s' % data_product_id, 'a'):
                 pass
 
-        gevent.sleep(5)
-        from subprocess import call
-        call(['open', 'http://localhost:9000/erddap/tabledap/data%s.html' % data_product_id])
+        if open_page:
+            gevent.sleep(5)
+            from subprocess import call
+            call(['open', 'http://localhost:9000/erddap/tabledap/data%s.html' % data_product_id])
     
     def launch_ui_facepage(self, data_product_id):
         '''

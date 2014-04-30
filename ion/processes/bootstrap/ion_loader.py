@@ -154,6 +154,7 @@ DEFAULT_CATEGORIES = [
     'PlatformAgentInstance',
     'InstrumentAgent',
     'InstrumentDevice',
+    'DataSource',
     'ExternalDataProvider',
     'ExternalDatasetModel',
     'ExternalDataset',

@@ -51,8 +51,15 @@ class TestEOIExternalResources(DMTestCase):
 	'''
 	tests the addition of external resources in to the system
 	'''
-	
 	def test_external_data_provider(self):
+		self.preload_external_providers()
+
+		breakpoint(locals(), globals())
+
+	'''
+	tests the addition of external resources in to the system
+	'''
+	def test_add_datasource_externaldataprovider_to_rr(self):
 		self.preload_external_providers()
 
 		ds = DataSource(name='bob')
@@ -61,7 +68,9 @@ class TestEOIExternalResources(DMTestCase):
 		edp = ExternalDataProvider(name='bob')
 		cc.resource_registry.create(edp)
 
-
+	'''
+	preload data from select scenario
+	'''	
 	def preload_external_providers(self):
 		config = DotDict()
 		config.op = 'load'

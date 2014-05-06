@@ -44,6 +44,7 @@ import time
 import gevent
 from gevent.event import Event
 import calendar
+from interface.objects import DataSource, ExternalDataProvider
 
 @attr('INT', group='eoi')
 class TestEOIExternalResources(DMTestCase):
@@ -53,8 +54,12 @@ class TestEOIExternalResources(DMTestCase):
 	
 	def test_external_data_provider(self):
 		self.preload_external_providers()
-		
-		breakpoint(locals(), globals())
+
+		ds = DataSource(name='bob')
+		cc.resource_registry.create(ds)
+
+		edp = ExternalDataProvider(name='bob')
+		cc.resource_registry.create(edp)
 
 
 	def preload_external_providers(self):

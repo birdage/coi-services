@@ -59,14 +59,18 @@ class TestEOIExternalResources(DMTestCase):
 	'''
 	tests the addition of external resources in to the system
 	'''
+	
+	'''
 	def test_add_datasource_externaldataprovider_to_rr(self):
 		self.preload_external_providers()
 
-		ds = DataSource(name='bob')
+		ds = DataSource(name='bob')		
+
 		cc.resource_registry.create(ds)
 
 		edp = ExternalDataProvider(name='bob')
 		cc.resource_registry.create(edp)
+	'''	
 
 	'''
 	preload data from select scenario

@@ -77,10 +77,9 @@ class EOIRegistrationProcess(SimpleProcess):
 
             param_list = '&'.join(data_fields)
 
-            request_string = self.server+'/service='+CREATE_HARVESTER+param_list
+            request_string = self.server+'/service='+CREATE_HARVESTER+"&"+param_list
             print request_string
             r = requests.get(request_string)
-
 
 
     def _register_provider(self, event, *args, **kwargs):

@@ -66,7 +66,7 @@ class EOIRegistrationProcess(SimpleProcess):
         used to create a harvester
         '''
         if self.importer_service_available:
-            print "resource id:", event.origin
+            #print "resource id:", event.origin
             obj = self.rr.read(event.origin)        
             data_fields = []
             for attrname, value in vars(obj).iteritems():           
@@ -77,8 +77,7 @@ class EOIRegistrationProcess(SimpleProcess):
 
             param_list = '&'.join(data_fields)
 
-            request_string = self.server+'/service='+CREATE_HARVESTER+"&"+param_list
-            print request_string
+            request_string = self.server+'/service='+CREATE_HARVESTER+"&"+param_list            
             r = requests.get(request_string)
 
 

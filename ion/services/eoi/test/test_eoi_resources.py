@@ -69,29 +69,35 @@ class TestEOIExternalResources(DMTestCase):
 		#more than one?
 		self.assertTrue(len(data_list)>1)
 		#make sure that the expected list is all there	
-		expected_list = ["neptune","ioos","ooi"]
+		expected_list = ['neptune','ioos','ooi']
 		for data in data_list:
 			self.assertTrue(data.name in expected_list)				
 
-		#make sure they exist in the geonetwork list
-		h_list = self.get_harvester_list()
-		names = self.get_harvester_names(h_list)
-		
+		#try more than once to get the harvester list, as can take a second to update
+		for x in xrange(0,3):
+			h_list = self.get_harvester_list()
+			names = self.get_harvester_names(h_list)
+
 		#check that the preload task loaded the required harvester
 		if len(names)>0:
-			all_accounted_for =  set(expected_list).issubset(set(names))       
+			all_accounted_for =  set(expected_list).issubset(set(names)) 
+
+			breakpoint(locals(), globals())      
 			if all_accounted_for:
 				log.debug("All harvesters accounted for...")	
+				print ("All harvesters accounted for...")	
 			else:
 				log.warn("All harvesters not accounted for")	
-				for expected_name in expected_list:
+				for expected_name in expected_list:					
 					if expected_name not in names:
-						log.error("harvester:"+expected_name+" in preload and resources, not in geonetwork")	
+						log.error("harvester:"+expected_name+" in preload and resources, not in geonetwork")
+					else:
+						log.warn("remoing harvester from geonetwork:"+expected_name)
+						self.remove_harvester_list(expected_name)
+						
 		else:
 			log.error("no harvester names returned, check geonetwork connection")	
 
-			
-		breakpoint(locals(), globals())
 
 	'''
 	tests the addition of external resources in to the system, 
@@ -139,6 +145,24 @@ class TestEOIExternalResources(DMTestCase):
 			log.error("check service is not running...%s", e)			
 		return None	
 
+	'''
+	can get the list of harvesters from th importer service, hits the geonetwork service
+	'''
+	def remove_harvester_list(self,name):
+		IMPORTER_SERVICE_SERVER = CFG.get_safe('eoi.importer_service.server', 'http://localhost')
+		IMPORTER_SERVICE_PORT = str(CFG.get_safe('eoi.importer_service.port', 8844))
+		self.importer_service_url = ''.join([IMPORTER_SERVICE_SERVER, ':', IMPORTER_SERVICE_PORT])
+		#at this point importer service should be up
+		#get the harvester list
+		harvester_get_url = self.importer_service_url+"/service=removeharvester&hfilter="+name
+		try:
+			r = requests.get(harvester_get_url,timeout=10)
+			return r.text
+		except Exception, e:
+			#fail because it should have the service running
+			log.error("check service is not running...%s", e)			
+		return None		
+
 	def get_harvester_names(self,xml):
 		#need to strip the encoding
 		try:			
@@ -147,10 +171,17 @@ class TestEOIExternalResources(DMTestCase):
 
 			root = etree.XML(xml)
 			d = root.findall("node/site/name")
-			name_list = []
+			
 			for name in d:
 			    etree.XML(etree.tostring(name), parser)
-			return parser.target.events
+
+			name_list = parser.target.events
+			corrected_name = []
+			for name in name_list:
+				n  =  [n for (n, e) in enumerate(name) if e == "'"]
+				name_str = name[n[0]+1:n[1]]
+				corrected_name.append(name_str)
+			return corrected_name	
 
 		except Exception, e:
 			return []

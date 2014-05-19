@@ -33,6 +33,7 @@ from pyon.net.endpoint import RPCClient
 from pyon.util.log import log
 from pyon.ion.event import EventPublisher
 from interface.objects import InstrumentSite, InstrumentModel, PortTypeEnum, Deployment, CabledInstrumentDeploymentContext
+from nose.tools import with_setup
 import lxml.etree as etree
 import simplejson as json
 import pkg_resources
@@ -52,13 +53,13 @@ MOCK_HARVESTER_NAME = "test_harvester"
 
 
 @attr('INT', group='eoi')
-class TestEOIExternalResources(DMTestCase):
-		
+class TestEOIExternalResources(DMTestCase):	
 	'''
 	tests the addition of external resources in to the system through preload
 	checks that there are datasources in geonetwork
 	checks that neptune and ioos have been added through preload as resources
 	'''
+	@unittest.skipIf( not (CFG.get_safe('eoi.meta.use_eoi_services', False)), 'Skip test services are not loaded')	
 	def test_external_data_provider_during_preload(self):
 		self.preload_external_providers()
 
@@ -82,7 +83,6 @@ class TestEOIExternalResources(DMTestCase):
 		if len(names)>0:
 			all_accounted_for =  set(expected_list).issubset(set(names)) 
 
-			breakpoint(locals(), globals())      
 			if all_accounted_for:
 				log.debug("All harvesters accounted for...")	
 			else:
@@ -96,6 +96,8 @@ class TestEOIExternalResources(DMTestCase):
 						
 		else:
 			log.error("no harvester names returned, check geonetwork connection")	
+
+		self.remove_added_harvesters()
 
 
 	'''
@@ -111,6 +113,8 @@ class TestEOIExternalResources(DMTestCase):
 
 		edp = ExternalDataProvider(name='bob')
 		cc.resource_registry.create(edp)
+
+		self.remove_added_harvesters()
 		
 
 	'''
@@ -134,14 +138,14 @@ class TestEOIExternalResources(DMTestCase):
 		IMPORTER_SERVICE_PORT = str(CFG.get_safe('eoi.importer_service.port', 8844))
 		self.importer_service_url = ''.join([IMPORTER_SERVICE_SERVER, ':', IMPORTER_SERVICE_PORT])
 		#at this point importer service should be up
-		#get the harvester list
+		#get the harvesters list
 		harvester_get_url = self.importer_service_url+"/service=requestharvester&hfilter=all"
 		try:
 			r = requests.get(harvester_get_url,timeout=10)
 			return r.text
 		except Exception, e:
 			#fail because it should have the service running
-			log.error("check service is not running...%s", e)			
+			log.error("check service, as it appears to not be running...%s", e)		
 		return None	
 
 	'''
@@ -159,7 +163,7 @@ class TestEOIExternalResources(DMTestCase):
 			return r.text
 		except Exception, e:
 			#fail because it should have the service running
-			log.error("check service is not running...%s", e)			
+			log.error("check service, as it appears to not be running...%s", e)						
 		return None		
 
 	def get_harvester_names(self,xml):
@@ -191,7 +195,7 @@ class TestEOIExternalResources(DMTestCase):
 	can be added too via the importer interface
 	'''
 	@unittest.skipIf( not (CFG.get_safe('eoi.meta.use_eoi_services', False)), 'Skip test services are not loaded')	
-	def test_adding_harvester(self):
+	def test_adding_removing_harvester(self):
 
 		IMPORTER_SERVICE_SERVER = CFG.get_safe('eoi.importer_service.server', 'http://localhost')
 		IMPORTER_SERVICE_PORT = str(CFG.get_safe('eoi.importer_service.port', 8844))
@@ -205,24 +209,68 @@ class TestEOIExternalResources(DMTestCase):
 			self.assertTrue(r.status_code == 200)			
 		except Exception, e:
 			#fail because it should have the service running
-			log.error("check service is not running...%s", e)			
+			log.error("check service, as it appears to not be running...%s", e)			
+			#should fail as the service should be running if it has been requested
 			self.assertTrue(False)
 		
 		#current number of harvesters and their names
-		h_list = self.get_harvester_list()
-		names = self.get_harvester_names(h_list)
+		names_before = self.get_harvester_names(self.get_harvester_list())
 		#check that a harvester of a specific name does not exist
 
 		#generate the harvester using something like below.
 		mock_harvester_create = self.importer_service_url+"/service=createharvester&lcstate=DEPLOYED&rev=1&searchterms=mutibeam,RI&availability=AVAILABLE&externalize=1&persistedversion=1&ogctype=&importxslt=gmiTogmd.xsl&addl=%7B%7D&harvestertype=geoPREST&description=IOOS&datasourceattributes=%7B%7D&visibility=1&connectionparams=%7B%7D&tsupdated=1399474190226&tscreated=1399474190226&institution=Institution(%7B%27website%27:%20%27%27,%20%27phone%27:%20%27%27,%20%27name%27:%20%27%27,%20%27email%27:%20%27%27%7D)&protocoltype=&name="+MOCK_HARVESTER_NAME+"&altids=[%27PRE:EDS_ID2%27]&datasourcetype=geoportal&type=DataSource&id=27aa22dc3f6742d3892a5ec41b0cedb2&protocoltype=http://www.google.com"
+		try:
+			r = requests.get(mock_harvester_create,timeout=5)
+			self.assertTrue(r.status_code == 200)			
+		except Exception, e:
+			log.error("check service, as it appears to not be running...%s", e)			
+			self.assertTrue(False)			
 
-		#get the list of harvester from the geonetwork server 
-			#use the following to get the harvester list
-			#http://eoi-dev1.oceanobservatories.org:8080/geonetwork/srv/eng/harvesting/xml.harvesting.get
+		names_after = self.get_harvester_names(self.get_harvester_list())
 
-		#check that the added harvester is in the list using bs4
+		#overview check to make sure that the number of names is less than it was before the additon
+		self.assertTrue(len(names_before) < len(names_after))		
+		#check that the added harvester is in the list
+		present = False
+		for name in names_after:
+			if MOCK_HARVESTER_NAME in name:
+				present = True
+				break
 
-		pass	
+		#if valid process
+		self.assertTrue(present)		
+
+		#remove the added harvester
+		self.remove_harvester_list(MOCK_HARVESTER_NAME)
+
+		#reset the variable
+		names_after = self.get_harvester_names(self.get_harvester_list())
+
+		#reset valid variable
+		present = False
+		for name in names_after:
+			if MOCK_HARVESTER_NAME in name:
+				present = True
+				break
+		#checks it has been removed
+		self.assertFalse(present)
+		#remove those added during preload
+		self.remove_added_harvesters()
+
+
+	'''
+	checks that havester information is available
+	can be added too via the importer interface
+	'''
+	@unittest.skipIf( not (CFG.get_safe('eoi.meta.use_eoi_services', False)), 'Skip test services are not loaded')	
+	def remove_added_harvesters(self):
+		names = self.get_harvester_names(self.get_harvester_list())
+		expected_list = ['neptune','ioos','ooi']
+		for n in names:
+			if n in expected_list:
+				log.warn("remoing harvester from geonetwork:"+n)
+				self.remove_harvester_list(n)				
+
 
 class EchoTarget(object):
     def __init__(self):

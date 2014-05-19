@@ -85,7 +85,6 @@ class TestEOIExternalResources(DMTestCase):
 			breakpoint(locals(), globals())      
 			if all_accounted_for:
 				log.debug("All harvesters accounted for...")	
-				print ("All harvesters accounted for...")	
 			else:
 				log.warn("All harvesters not accounted for")	
 				for expected_name in expected_list:					

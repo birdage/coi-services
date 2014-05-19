@@ -172,8 +172,7 @@ class ResourceParser(object):
             coverage_path = self._get_coverage_path(new_resource_id)
 
             #generate table from params and id
-            [success, prim_types] = self.generate_sql_table(new_resource_id, param_dict, relevant, coverage_path)
-            print "OMG IT DID IT: SUCCESS?:" + success
+            [success, prim_types] = self.generate_sql_table(new_resource_id, param_dict, relevant, coverage_path)            
             if success:
                 #generate geoserver layer
                 self.send_geonode_request(self.addlayer, new_resource_id, prim_types)
@@ -233,13 +232,12 @@ class ResourceParser(object):
         if not self.does_table_exist(dataset_id):
             valid_types = {}
             create_table_string = 'create foreign table "%s" (' % dataset_id            
-            print "-----relevant:",relevant," valid?"+self.required_fields_satisfied(relevant)                      
+            log.debug("relevant:"+relevant+" valid?:"+self.required_fields_satisfied(relevant))                      
             if self.required_fields_satisfied(relevant):       
                 #loop through the params
                 encodings = []     
 
                 for param in relevant:
-                    print "------param:"+param
                     #get the information
                     data_item = params[param]
                     desc = data_item[1]['description']
@@ -292,9 +290,7 @@ class ResourceParser(object):
 
                 #check that the dataproduct has all the required fields
                 
-                try:                   
-                    print create_table_string
-
+                try:                                       
                     self.cur.execute(create_table_string)
                     self.con.commit()
                     #should always be lat and lon
@@ -307,7 +303,6 @@ class ResourceParser(object):
                     log.debug('Error %s', e)
                     raise
             else: 
-                print "somet goes here"
                 log.warn('resource skipped, it does not contain all of the required params:')  
                 return False              
 

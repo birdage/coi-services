@@ -37,11 +37,11 @@ class EOIRegistrationProcess(SimpleProcess):
 
         log.info("Using geoservices="+str(self.using_eoi_services))
         if not self.using_eoi_services:
-            log.warn("NOT using geoservices...") 
+            log.warn("not using geoservices...") 
 
         self.importer_service_available = self.check_for_importer_service()
         if not self.importer_service_available:
-            log.warn("NOT using importer service...")  
+            log.warn("not using importer service...")  
 
     def check_for_importer_service(self):
         '''
@@ -66,11 +66,10 @@ class EOIRegistrationProcess(SimpleProcess):
         used to create a harvester
         '''
         if self.importer_service_available:
-            #print "resource id:", event.origin
             obj = self.rr.read(event.origin)        
             data_fields = []
             for attrname, value in vars(obj).iteritems():           
-                #generate th param list to pass to importer service
+                #generate th param list to pass to importer service using field names
                 if attrname is not "contact":
                     f = attrname.replace("_", "")+"="+str(obj[attrname])
                     data_fields.append(f)
@@ -83,7 +82,9 @@ class EOIRegistrationProcess(SimpleProcess):
 
     def _register_provider(self, event, *args, **kwargs):
         if self.importer_service_available:
-          print "provider id:", event.origin
+            #print "provider id:", event.origin
+            pass
+            
 
     def on_quit(self):
         self.data_source_subscriber.stop()

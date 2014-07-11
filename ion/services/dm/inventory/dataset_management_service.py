@@ -38,6 +38,7 @@ import os
 import numpy as np
 import re
 import ast
+from pyon.util.breakpoint import debug_wrapper
 
 
 
@@ -57,7 +58,6 @@ class DatasetManagementService(BaseDatasetManagementService):
             self.resource_parser = None
 
 #--------
-
     def create_dataset(self, dataset=None, parameter_dict=None, parameter_dictionary_id=''):
         
         if parameter_dict is not None:
@@ -93,15 +93,20 @@ class DatasetManagementService(BaseDatasetManagementService):
 
         log.debug('creating dataset: %s', dataset_id)
 
+        self.clients.resource_registry.create_association(dataset_id, PRED.hasParameterDictionary, parameter_dictionary_id)
+
         #table loader create resource
         if dataset.visibility == ResourceVisibilityEnum.PUBLIC:
+            
             log.debug('dataset visible: %s', dataset_id)
             if self._get_eoi_service_available() and parameter_dictionary_id:
+                
 
                 params = self.read_parameter_contexts(parameter_dictionary_id)
                 param_defs = {}
 
                 for p in params:                
+                    
                     param_defs[p.name] = {
                         "value_encoding" : p.value_encoding,
                         "parameter_type" : p.parameter_type,
@@ -111,10 +116,17 @@ class DatasetManagementService(BaseDatasetManagementService):
                         "description" : p.description,
                         "fill_value" : p.fill_value
                     }
+                data_product_ids, _ = self.clients.resource_registry.find_subjects(object=dataset_id, predicate=PRED.hasDataset, id_only=True)
 
-                self._create_single_resource(dataset_id, param_defs)
+                print data_product_ids
 
-        self.clients.resource_registry.create_association(dataset_id, PRED.hasParameterDictionary, parameter_dictionary_id)
+                if len(data_product_ids)>0:
+                    self._create_single_resource(data_product_ids[0], param_defs)
+
+                else:    
+                    log.warning('could not identify data product id for eoi services: %s', dataset_id)
+                    self._create_single_resource(dataset_id, param_defs)
+       
 
         return dataset_id
 

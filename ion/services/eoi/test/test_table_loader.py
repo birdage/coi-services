@@ -10,7 +10,7 @@ from gevent.baseserver import _tcp_listener
 from gevent import pywsgi
 from gevent.monkey import patch_all; patch_all()
 from pyon.util.breakpoint import breakpoint
-from pyon.util.int_test import IonIntegrationTestCase
+from ion.services.dm.test.dm_test_case import DMTestCase
 from pyon.public import CFG
 from pyon.util.log import log
 from nose.plugins.attrib import attr
@@ -23,15 +23,16 @@ from coverage_model import SimplexCoverage, QuantityType, ArrayType, ConstantTyp
 from ion.services.dm.utility.test.parameter_helper import ParameterHelper
 from ion.services.dm.utility.granule_utils import time_series_domain
 from ion.services.dm.test.test_dm_end_2_end import DatasetMonitor
-from interface.objects import DataProduct
+from interface.objects import DataProduct, ParameterContext
 from pydap.client import open_url
 import unittest
 import gevent
 import requests
 import json
+import numpy as np
 
 @attr('INTMAN', group='eoi')
-class DatasetLoadTest(IonIntegrationTestCase):
+class DatasetLoadTest(DMTestCase):
     """
     The following integration tests (INTMAN) are to ONLY be run manually
     """
@@ -54,46 +55,87 @@ class DatasetLoadTest(IonIntegrationTestCase):
         self.pubsub_management = PubsubManagementServiceClient()
         self.resource_registry = self.container.resource_registry
 
+    def data_product_from_params(self, data_product, param_struct):
+
+        param_dict = {}
+        for name,param in param_struct.iteritems():
+            ctx = ParameterContext(name=name, **param)
+            p_id = self.dataset_management.create_parameter(ctx)
+            param_dict[name] = p_id
+
+        pdict_id = self.dataset_management.create_parameter_dictionary(data_product.name, param_dict.values(), 'time')
+        stream_def_id = self.pubsub_management.create_stream_definition(data_product.name, parameter_dictionary_id=pdict_id)
+        data_product_id = self.data_product_management.create_data_product(data_product, stream_definition_id=stream_def_id)
+        
+        return data_product_id
+
     @unittest.skipIf(not (CFG.get_safe('eoi.meta.use_eoi_services', False)), 'Skip test in TABLE LOADER as services are not loaded')
     def test_create_dataset(self):
         ph = ParameterHelper(self.dataset_management, self.addCleanup)
-        pdict_id = ph.create_extended_parsed()
+        params = {
+            "time" : {
+                "parameter_type" : "quantity",
+                "value_encoding" : "float64",
+                "display_name" : "Time",
+                "description" : "Timestamp",
+                "units" : "seconds since 1900-01-01"
+            },
+            "temp" : {
+                "parameter_type" : "quantity",
+                "value_encoding" : "float32",
+                "display_name" : "Data",
+                "description" : "mock temp",
+                "units" : "1",
+                "fill_value" : -9999
+            },
+            "lat" : {
+                "parameter_type" : "quantity",
+                "value_encoding" : "float64",
+                "display_name" : "Latitude",
+                "description" : "Latitude",
+                "units" : "degrees_east"
+            },
+            "lon" : {
+                "parameter_type" : "quantity",
+                "value_encoding" : "float64",
+                "display_name" : "Longitude",
+                "description" : "Longitude",
+                "units" : "degrees_west"
+            }
+        }
 
-        stream_def_id = self.pubsub_management.create_stream_definition('example', parameter_dictionary_id=pdict_id)
-        self.addCleanup(self.pubsub_management.delete_stream_definition, stream_def_id)
-
-
-        dp = DataProduct(name='example')
-
-        data_product_id = self.data_product_management.create_data_product(dp, stream_def_id)
-        self.addCleanup(self.data_product_management.delete_data_product, data_product_id)
-
+        data_product = DataProduct("Simple data product")
+        data_product_id = self.data_product_from_params(data_product, params)
         self.data_product_management.activate_data_product_persistence(data_product_id)
-        self.addCleanup(self.data_product_management.suspend_data_product_persistence, data_product_id)
 
-        dataset_id = self.resource_registry.find_objects(data_product_id, PRED.hasDataset, id_only=True)[0][0]
-        monitor = DatasetMonitor(dataset_id)
+        monitor = DatasetMonitor(data_product_id=data_product_id)
         self.addCleanup(monitor.stop)
 
-        rdt = ph.get_rdt(stream_def_id)
-        ph.fill_rdt(rdt, 100)
+        rdt = ph.rdt_for_data_product(data_product_id)
+        rdt['time'] = np.arange(100)
+        rdt['temp'] = np.arange(100)
+        rdt['lat'] = np.ones(100, dtype=np.float64) * 40
+        rdt['lon'] = np.ones(100, dtype=np.float64) * -70
         ph.publish_rdt_to_data_product(data_product_id, rdt)
-        self.assertTrue(monitor.event.wait(10))
+        self.assertTrue(monitor.wait())
 
         # Yield to other greenlets, had an issue with connectivity
         gevent.sleep(1)
 
         log.debug("--------------------------------")
+        dataset_id = self.resource_registry.find_objects(data_product_id, PRED.hasDataset, id_only=True)[0][0]
         log.debug(dataset_id)
-        coverage_path = DatasetManagementService()._get_coverage_path(dataset_id)
+        coverage_path = DatasetManagementService._get_coverage_path(dataset_id)
         log.debug(coverage_path)
         log.debug("--------------------------------")
+
+        self.strap_erddap(data_product_id)
 
         breakpoint(locals(), globals())
 
 
 @attr('INT', group='eoi')
-class ServiceTests(IonIntegrationTestCase):
+class ServiceTests(DMTestCase):
     """
     Tests the GeoServer and Foreign Data Wrapper (FDW) services.
     """

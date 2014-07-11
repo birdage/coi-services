@@ -278,7 +278,7 @@ class DMTestCase(IonIntegrationTestCase):
         if open_page:
             gevent.sleep(5)
             from subprocess import call
-            call(['open', 'http://localhost:9000/erddap/tabledap/data%s.html' % data_product_id])
+            call(['open', 'http://localhost:8005/erddap/tabledap/data%s.html' % data_product_id])
     
     def launch_ui_facepage(self, data_product_id):
         '''

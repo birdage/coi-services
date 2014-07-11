@@ -278,15 +278,22 @@ class ResourceParser(object):
             self.drop_existing_table(dataset_id, use_cascade=True)
             return [False,None]
 
-    def generate_table_view(self, dataset_id, lat_field, lon_field):
-        """
-        Generate table view including geom
-        """
-        sqlquery = """
-        CREATE or replace VIEW "%s%s%s" as SELECT ST_SetSRID(ST_MakePoint(%s, %s),4326) as 
-        geom, * from "%s";
-        """ % (self.table_prefix, dataset_id, self.view_suffix, lon_field, lat_field, dataset_id)
-        return sqlquery
+    def generate_table_view(self, dataset_id, lat_field, lon_field,lat_lon_available=False):
+        if lat_lon_available:
+            """
+            Generate table view including geom
+            """
+            sqlquery = """
+            CREATE or replace VIEW "%s%s%s" as SELECT ST_SetSRID(ST_MakePoint(%s, %s),4326) as 
+            geom, * from "%s";
+            """ % (self.table_prefix, dataset_id, self.view_suffix, lon_field, lat_field, dataset_id)
+            return sqlquery
+        else:
+            sqlquery = """
+            CREATE or replace VIEW "%s%s%s" as SELECT ST_SetSRID(ST_MakePoint(0, 0),4326) as 
+            geom, * from "%s";
+            """ % (self.table_prefix, dataset_id, self.view_suffix, dataset_id)
+            return sqlquery
 
     def add_server_info(self, sqlquery, coverage_path, coverage_id):
         """
